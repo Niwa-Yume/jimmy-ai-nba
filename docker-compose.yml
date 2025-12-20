@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: jimmy_db
+    restart: always
+    environment:
+      POSTGRES_USER: jimmy_user
+      POSTGRES_PASSWORD: secure_password_123
+      POSTGRES_DB: jimmy_nba_db
+    ports:
+      - "5432:5432"
+    volumes:
+      # Persistance des données (pour ne pas tout perdre au redémarrage)
+      - postgres_data:/var/lib/postgresql/data
+      # Script d'init (exécuté uniquement au premier lancement)
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+volumes:
+  postgres_data:

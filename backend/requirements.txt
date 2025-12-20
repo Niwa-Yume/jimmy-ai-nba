@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]  # Le serveur web ultra-rapide
+sqlalchemy         # L'ORM pour parler à ta BDD proprement
+psycopg2-binary    # Le driver PostgreSQL
+pandas             # Pour les calculs de stats (Moyennes, Projections)
