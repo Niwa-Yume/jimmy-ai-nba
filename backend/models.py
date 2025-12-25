@@ -34,15 +34,15 @@ class PlayerGameStats(Base):
     points = Column(Integer)
     rebounds = Column(Integer)
     assists = Column(Integer)
-    
+
     # ✅ NOUVELLES STATS
     steals = Column(Integer, default=0)
     blocks = Column(Integer, default=0)
-    three_points_made = Column(Integer, default=0) # 3PM
-    
+    three_points_made = Column(Integer, default=0)  # 3PM
+
     # ✅ NOUVEAU : CONTEXTE DU MATCH
-    matchup = Column(String(20)) # Ex: "LAL @ BOS" ou "LAL vs BOS"
-    
+    matchup = Column(String(20))  # Ex: "LAL @ BOS" ou "LAL vs BOS"
+
     minutes_played = Column(Float)
     fg_percentage = Column(Float)
 
@@ -113,3 +113,23 @@ class PlayerInjury(Base):
 
     # Relation
     player = relationship("Player", back_populates="injuries")
+
+
+# ✅ NOUVELLE TABLE : Stockage des Cotes
+class BettingOdds(Base):
+    __tablename__ = "betting_odds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_id = Column(String, index=True)  # ID NBA du match (ex: "0022401185")
+    player_id = Column(Integer, ForeignKey("player.id"))
+
+    market = Column(String)  # "points", "rebounds", "assists"
+    line = Column(Float)
+    odds_over = Column(Float)
+    odds_under = Column(Float)
+    bookmaker = Column(String)
+
+    # Pour savoir si la donnée est périmée
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    player = relationship("Player")
