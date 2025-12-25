@@ -591,3 +591,62 @@ def get_best_bets():
             return obj.get('data', [])
     except Exception:
         return []
+
+
+@app.get("/games/week")
+def get_games_week(db: Session = Depends(get_db)):
+    """Retourne les matchs de la semaine (aujourd'hui -> +7 jours) sous forme de liste.
+    Format retourné attendu par le frontend : {"games": [ {"nba_game_id":..., "game_date": "YYYY-MM-DD", "game_time": "HH:MM", "home_team": "LAL", "away_team": "BOS", "arena": "..."}, ... ]}
+    """
+    today = datetime.now().date()
+    end = today + timedelta(days=7)
+    games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date >= today, models.GameSchedule.game_date <= end).all()
+
+    out = []
+    for g in games:
+        out.append({
+            "nba_game_id": g.nba_game_id,
+            "game_date": g.game_date.isoformat() if g.game_date else None,
+            "game_time": g.game_time,
+            "home_team": g.home_team_code,
+            "away_team": g.away_team_code,
+            "arena": g.arena,
+            "status": g.status
+        })
+    return {"games": out}
+
+
+@app.get("/games/{nba_game_id}/lineups")
+def get_game_lineups(nba_game_id: str, db: Session = Depends(get_db)):
+    """Retourne les lineups (home_roster, away_roster) pour un match donné en utilisant get_roster_for_team.
+    Le frontend attend un dict contenant home_team, away_team, home_roster, away_roster.
+    """
+    game = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id == nba_game_id).first()
+    if not game:
+        return {"error": "game_not_found"}
+
+    home_code = game.home_team_code
+    away_code = game.away_team_code
+
+    home_roster = get_roster_for_team(home_code, db)
+    away_roster = get_roster_for_team(away_code, db)
+
+    # Normaliser le format pour le frontend
+    def _normalize_roster(roster):
+        out = []
+        for p in roster:
+            out.append({
+                "id": p.get('id'),
+                "full_name": p.get('full_name'),
+                "position": p.get('position'),
+                "nba_player_id": p.get('nba_id') or p.get('nba_player_id'),
+                "injury_status": p.get('injury_status', 'HEALTHY')
+            })
+        return out
+
+    return {
+        "home_team": home_code,
+        "away_team": away_code,
+        "home_roster": _normalize_roster(home_roster),
+        "away_roster": _normalize_roster(away_roster)
+    }

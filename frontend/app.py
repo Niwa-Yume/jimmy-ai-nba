@@ -679,7 +679,8 @@ def page_best_bets():
                     st.caption(f"{b.get('market').capitalize()} • Ligne: {b.get('line')} • Odds: {b.get('odds')}")
                 with header_cols[1]:
                     checked = bet_key in st.session_state.selected_bets_ids
-                    new_state = st.checkbox("", value=checked, key=f"chk_{bet_key}")
+                    # Provide a non-empty label but hide it for accessible checkboxes
+                    new_state = st.checkbox("Select bet", value=checked, key=f"chk_{bet_key}", label_visibility='hidden')
                     if new_state and not checked:
                         st.session_state.selected_bets_ids.add(bet_key)
                     if not new_state and checked:
