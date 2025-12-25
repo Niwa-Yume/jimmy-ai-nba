@@ -1,5 +1,11 @@
 fastapi
-uvicorn[standard]  # Le serveur web ultra-rapide
-sqlalchemy         # L'ORM pour parler à ta BDD proprement
-psycopg2-binary    # Le driver PostgreSQL
-pandas             # Pour les calculs de stats (Moyennes, Projections)
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pandas
+python-dotenv
+google-genai
+requests
+nba_api
+cachetools
+python-multipart
