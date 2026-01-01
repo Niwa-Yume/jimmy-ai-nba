@@ -642,132 +642,70 @@ def page_best_bets():
     else:
         bets = bets_all
 
-    # --- NOUVEAU : Affichage des paris (cards) et sélection ---
+    # Enrichissement UX : drapeaux et tri par score décroissant
+    for b in bets:
+        b.setdefault('injury_status', 'UNKNOWN')
+        b.setdefault('odds_source', 'snapshot')
+        b['score'] = float(b.get('ev') or 0.0)
+        b['risk_flag'] = 'INJ' if b['injury_status'] and b['injury_status'] not in ['HEALTHY', 'ACTIVE'] else ''
+        b['confidence_flag'] = 'HIGH' if b['score'] >= 75 else ('MED' if b['score'] >= 60 else 'LOW')
+    bets = sorted(bets, key=lambda x: x.get('score', 0), reverse=True)
+
     st.markdown(f"#### 🎯 Opportunités détectées : {len(bets)}")
 
-    # Initialise la structure de sélection dans la session si nécessaire
+    # Limiter l'affichage à 15 cartes pour simplicité; bouton pour tout voir
+    show_all = st.checkbox("Afficher tous les picks", value=False)
+    bets_to_show = bets if show_all else bets[:15]
+
     if 'selected_bets_ids' not in st.session_state:
         st.session_state.selected_bets_ids = set()
 
     col_sel_left, col_sel_right = st.columns([1, 3])
     with col_sel_left:
         if st.button("Tout sélectionner"):
-            st.session_state.selected_bets_ids = {f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" for b in bets}
+            st.session_state.selected_bets_ids = {f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" for b in bets_to_show}
             safe_rerun()
         if st.button("Tout désélectionner"):
             st.session_state.selected_bets_ids = set()
             safe_rerun()
     with col_sel_right:
-        st.write("Sélectionnez manuellement les paris à inclure dans votre ticket.")
+        st.write("Sélectionnez les paris à inclure (top 15 par défaut).")
 
-    # Affichage en grille : 2 colonnes
-    for i in range(0, len(bets), 2):
-        cols = st.columns(2)
-        for j, col in enumerate(cols):
-            idx = i + j
-            if idx >= len(bets):
-                continue
-            b = bets[idx]
-            # clé unique pour la checkbox
-            bet_key = f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}"
-            with col:
-                # Card
-                st.markdown('<div class="bet-ticket">', unsafe_allow_html=True)
-                header_cols = st.columns([4, 1])
-                with header_cols[0]:
-                    st.markdown(f"**{b.get('player')}** — {b.get('team')} vs {b.get('opponent')}")
-                    st.caption(f"{b.get('market').capitalize()} • Ligne: {b.get('line')} • Odds: {b.get('odds')}")
-                with header_cols[1]:
-                    checked = bet_key in st.session_state.selected_bets_ids
-                    # Provide a non-empty label but hide it for accessible checkboxes
-                    new_state = st.checkbox("Select bet", value=checked, key=f"chk_{bet_key}", label_visibility='hidden')
-                    if new_state and not checked:
-                        st.session_state.selected_bets_ids.add(bet_key)
-                    if not new_state and checked:
-                        st.session_state.selected_bets_ids.discard(bet_key)
+    for b in bets_to_show:
+        bet_key = f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}"
+        checked = bet_key in st.session_state.selected_bets_ids
+        with st.container():
+            cols = st.columns([0.1, 0.6, 0.3])
+            with cols[0]:
+                new_val = st.checkbox("Sélection", value=checked, key=f"chk_{bet_key}", label_visibility="collapsed")
+                if new_val:
+                    st.session_state.selected_bets_ids.add(bet_key)
+                else:
+                    st.session_state.selected_bets_ids.discard(bet_key)
+            with cols[1]:
+                st.markdown(f"**{b.get('player')}** — {b.get('market').upper()} {b.get('line')} @ {b.get('odds')} (src: {b.get('odds_source') or 'n/a'})")
+                st.markdown(f"Proj: {b.get('projection')} | Conf: {b.get('confidence')} | Score: {b.get('score'):.0f}")
+                if b.get('risk_flag'):
+                    st.markdown(f"🚑 Statut blessure: {b.get('injury_status')}")
+            with cols[2]:
+                st.markdown(f"EV / Score: **{b.get('score'):.0f}**")
+                st.markdown(f"{b.get('team')} vs {b.get('opponent')}")
+                st.markdown(f"Type: {b.get('bet_type')}")
 
-                st.markdown(f"<div class='ticket-body'><div class='ticket-line'>{b.get('line')}</div><div class='ticket-odds'>@ {b.get('odds')}</div></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='margin-top:8px; font-weight:700;'>Projection: {b.get('projection'):.1f} — {b.get('confidence')}</div>", unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-    # Build list of selected bets to use for ticket generation
     selected_bets = [b for b in bets if f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" in st.session_state.selected_bets_ids]
 
-    # Si aucun pari visible (filtrage), afficher un message utile
-    if len(bets) == 0:
-        st.warning("Aucune opportunité visible avec les filtres actuels. Essayez d'élargir les marchés ou désactivez le filtre 'Confiance forte'.")
-
-    # Option d'affichage : ne montrer que la confiance '🔥 FORTE'
-    only_strong = st.checkbox("Afficher seulement confiance forte (🔥)", value=True)
-
-    # ✅ BOUTON GÉNÉRER TICKET
-    if bets:
-        if st.button("✨ Générer mon Ticket Optimisé", use_container_width=True):
-            with st.spinner("Optimisation du portefeuille..."):
-                # Appliquer le filtre de confiance si demandé
-                send_bets = selected_bets if selected_bets else bets
-                if only_strong:
-                    send_bets = [b for b in send_bets if '🔒' in b.get('confidence', '') or '✅' in b.get('confidence', '')]
-                tickets = build_parlay(send_bets)
-                st.session_state.tickets = tickets
-                safe_rerun()
-
-    # ✅ AFFICHAGE DES TICKETS
-    tickets = st.session_state.get("tickets")
-    if tickets:
-        c1, c2 = st.columns(2)
-        
-        # Ticket SAFE (Streamlit-native)
-        with c1:
-            safe = tickets.get("safe_bet")
-            if safe and safe.get('legs'):
-                st.subheader("🔒 Ticket Sûreté")
-                total = safe.get('total_odds')
-                st.metric(label="Cote totale", value=f"{total:.2f}" if total else "N/A")
-                for leg in safe.get('legs'):
-                    match = leg.get('match', {}) or {}
-                    home = match.get('home_team') or leg.get('team')
-                    away = match.get('away_team') or leg.get('opponent')
-                    gtime = match.get('game_time')
-                    time_str = ''
-                    try:
-                        if gtime:
-                            time_str = f" à {gtime}"
-                    except:
-                        pass
-                    st.write(f"**{leg['player']}** ({leg['team']} vs {away}{time_str})")
-                    st.write(f"{leg['market']} {leg['line']} @ {leg['odds'] or 'N/A'}")
-                    st.write(f"Projection: {leg['projection']:.1f} | Confiance: {leg['confidence']}")
-                    st.divider()
-            else:
-                st.info("Aucun ticket Sûreté disponible (pas assez de paris sûrs).")
-
-        # Ticket VALUE (Streamlit-native)
-        with c2:
-            value = tickets.get("value_bet")
-            if value and value.get('legs'):
-                st.subheader("💰 Ticket Value")
-                total = value.get('total_odds')
-                st.metric(label="Cote totale", value=f"{total:.2f}" if total else "N/A")
-                for leg in value.get('legs'):
-                    match = leg.get('match', {}) or {}
-                    home = match.get('home_team') or leg.get('team')
-                    away = match.get('away_team') or leg.get('opponent')
-                    gtime = match.get('game_time')
-                    time_str = ''
-                    try:
-                        if gtime:
-                            time_str = f" à {gtime}"
-                    except:
-                        pass
-                    st.write(f"**{leg['player']}** ({leg['team']} vs {away}{time_str})")
-                    st.write(f"{leg['market']} {leg['line']} @ {leg['odds'] or 'N/A'}")
-                    st.write(f"Projection: {leg['projection']:.1f} | Confiance: {leg['confidence']}")
-                    st.divider()
-            else:
-                st.info("Aucun ticket Value disponible (pas assez de paris value).")
+    st.markdown("### 🧮 Votre ticket")
+    if selected_bets:
+        col_left, col_right = st.columns([3,1])
+        with col_left:
+            for b in selected_bets:
+                st.markdown(f"- {b.get('player')} {b.get('market')} {b.get('line')} @ {b.get('odds')} ({b.get('team')} vs {b.get('opponent')})")
+        with col_right:
+            if st.button("Construire le parlay"):
+                resp = build_parlay(selected_bets)
+                st.write(resp)
     else:
-        st.info("Aucun ticket généré. Lancez un scan et sélectionnez des paris d'abord.")
+        st.info("Sélectionnez des picks pour construire le ticket.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 

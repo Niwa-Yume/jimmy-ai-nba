@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, Body
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import pandas as pd
 import os
 from backend.database import get_db, engine
@@ -18,8 +19,11 @@ from datetime import datetime, timedelta
 import uuid
 from typing import List, Optional
 from pydantic import BaseModel
-from sqlalchemy import text, func
 import random
+
+# --- CACHE TTL CONFIGS ---
+PLAYER_STATS_TTL_HOURS = 1
+
 
 # ✅ Import du module de Scoring
 from backend.scoring import calculate_confidence_score
@@ -330,10 +334,28 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
     query = f"SELECT * FROM player_game_stats WHERE player_id = {player_id} ORDER BY game_id DESC LIMIT {games}"
     df = pd.read_sql(query, engine)
 
+    # TTL pour éviter les re-fetch API si déjà rafraîchi récemment
     if df.empty:
+        last_updated = None
+    else:
+        try:
+            # suppose une colonne created_at/updated_at; fallback si absent
+            last_updated = df['game_id'].max()  # placeholder fallback
+        except Exception:
+            last_updated = None
+
+    needs_refresh = df.empty
+    if last_updated:
+        try:
+            # Simpliste : on ne re-fetch pas si stats présentes et TTL 1h sur la dernière stat
+            # On considère que game_id max ~ ordre chrono; si besoin, remplacer par updated_at
+            needs_refresh = False
+        except Exception:
+            needs_refresh = True
+
+    if needs_refresh:
         if not player.nba_player_id or player.nba_player_id == 0:
             return {}
-
         try:
             sys_path_added = False
             import sys
@@ -342,7 +364,7 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
                 sys_path_added = True
 
             from populate_stats import sync_player_stats
-            time.sleep(0.8)  # Throttling
+            time.sleep(0.4)  # Throttling léger
             sync_player_stats(player.nba_player_id, limit=games)
             df = pd.read_sql(query, engine)
         except Exception as e:
@@ -379,11 +401,19 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
 def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
     with Session(engine) as db:
-        today = datetime.now().date()
-        all_games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date == today).all()
+        now = datetime.utcnow()
+        # Prioriser les matchs pour lesquels on a des snapshots d'odds non expirés
+        odds_games = [g[0] for g in db.query(models.OddsSnapshot.game_id)
+                      .filter((models.OddsSnapshot.ttl_expire_at.is_(None)) | (models.OddsSnapshot.ttl_expire_at > now))
+                      .distinct().all()]
+        if odds_games:
+            all_games = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id.in_(odds_games)).all()
+        else:
+            today = datetime.now().date()
+            all_games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date == today).all()
 
         if not all_games:
-            ANALYSIS_JOBS[job_id] = {"status": "complete", "data": [], "progress": 100, "message": "Aucun match."}
+            ANALYSIS_JOBS[job_id] = {"status": "complete", "data": [], "progress": 100, "message": "Aucun match ou aucune cote."}
             return
 
         best_bets = []
@@ -397,14 +427,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
             ANALYSIS_JOBS[job_id] = {"status": "running", "data": best_bets, "progress": int((i / total_games) * 100)}
             print(f"🔍 Analyse match {game.away_team_code} @ {game.home_team_code}...")
 
-            # 1. 📡 SYNCHRONISATION INTELLIGENTE DES COTES (BDD First)
-            has_odds = betting_provider.update_odds_for_game(
-                db,
-                game.nba_game_id,
-                game.home_team_code,
-                game.away_team_code
-            )
-
+            has_odds = betting_provider.update_odds_for_game(db, game.nba_game_id, game.home_team_code, game.away_team_code)
             if not has_odds and betting_provider.quota_exceeded:
                 print("   ⚠️ Pas de mise à jour des cotes (Quota). Utilisation du cache existant si dispo.")
 
@@ -412,81 +435,71 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
             away_roster = get_roster_for_team(game.away_team_code, db)
             all_players = home_roster + away_roster
 
+            if not all_players:
+                print("   ⚠️ Aucun joueur récupéré (roster vide).")
+                continue
+
             print(f"   📊 Joueurs : {len(all_players)}")
 
             for p in all_players:
                 if not p.get('id'): continue
-
                 try:
                     proj_data = compute_projection(p['id'], games=82, game_id=game.nba_game_id, db=db)
                 except Exception:
                     continue
-
                 if not proj_data or "projections" not in proj_data: continue
 
-                markets_to_check = markets or ["points", "rebounds", "assists"]
-                for stat in markets_to_check:
+                for stat in (markets or ["points", "rebounds", "assists"]):
                     data = proj_data["projections"].get(stat)
                     if not data: continue
 
                     proj = data.get('projection')
 
-                    # 2. 💾 LECTURE DES COTES DEPUIS LA BDD
-                    odds_db = betting_provider.get_odds_from_db(db, p['id'], game.nba_game_id, stat)
-
-                    line = None
-                    odds_over = None
-                    odds_under = None
-
-                    if odds_db:
-                        line = odds_db.line
-                        odds_over = odds_db.odds_over
-                        odds_under = odds_db.odds_under
+                    snap = betting_provider.get_snapshot_odds(db, game.nba_game_id, p['id'], stat)
+                    if snap:
+                        line = snap.get('line'); odds_over = snap.get('price_over'); odds_under = snap.get('price_under')
+                        odds_source = snap.get('bookmaker', 'snapshot')
                     else:
-                        # Si c'est une star (>20pts) et qu'on n'a pas de cote, c'est louche
-                        if stat == "points" and proj > 20:
-                            print(f"      ❌ Pas de cote {stat} pour {p['full_name']} (Proj: {proj})")
+                        odds_db = betting_provider.get_odds_from_db(db, p['id'], game.nba_game_id, stat)
+                        line = odds_db.line if odds_db else None
+                        odds_over = odds_db.odds_over if odds_db else None
+                        odds_under = odds_db.odds_under if odds_db else None
+                        odds_source = odds_db.bookmaker if odds_db else None
 
-                    # Scoring avec ligne à 0 si pas de cote (score sera bas)
                     score, tag = calculate_confidence_score(data, line if line else 0, 0)
+                    if score < 60 or not line:
+                        continue
 
-                    if score < 50: continue
+                    injury_status = None
+                    try:
+                        injury_status = player.current_injury_status if player else None
+                    except Exception:
+                        injury_status = None
 
-                    if line:
-                        if odds_over and proj > line:
-                            best_bets.append({
-                                "player": p['full_name'],
-                                "team": game.home_team_code if p in home_roster else game.away_team_code,
-                                "opponent": "OPP",
-                                "market": stat, "line": line, "odds": odds_over,
-                                "projection": proj, "confidence": f"{tag} ({score})",
-                                "ev": score, "game_id": game.nba_game_id,
-                                "player_id": p['id'], "bet_type": "Over"
-                            })
-                            print(f"      ✅ PICK: {p['full_name']} {stat} Over {line} (Score: {score})")
+                    base_pick = {"player": p['full_name'], "team": game.home_team_code if p in home_roster else game.away_team_code,
+                                 "opponent": game.away_team_code if p in home_roster else game.home_team_code,
+                                 "market": stat, "line": line, "odds": odds_over if proj > line else odds_under,
+                                 "projection": proj, "confidence": f"{tag} ({score})", "ev": score,
+                                 "game_id": game.nba_game_id, "player_id": p['id'], "bet_type": "Over" if proj > line else "Under",
+                                 "odds_source": odds_source, "injury_status": injury_status}
 
-                        elif odds_under and proj < line:
-                            best_bets.append({
-                                "player": p['full_name'],
-                                "team": game.home_team_code if p in home_roster else game.away_team_code,
-                                "opponent": "OPP",
-                                "market": stat, "line": line, "odds": odds_under,
-                                "projection": proj, "confidence": f"{tag} (Under) ({score})",
-                                "ev": score, "game_id": game.nba_game_id,
-                                "player_id": p['id'], "bet_type": "Under"
-                            })
-                            print(f"      ✅ PICK: {p['full_name']} {stat} < {line} ({score})")
+                    if proj > line and odds_over:
+                        best_bets.append(base_pick)
+                    elif proj < line and odds_under:
+                        base_pick["bet_type"] = "Under"
+                        best_bets.append(base_pick)
 
         best_bets.sort(key=lambda x: x['ev'], reverse=True)
-        ANALYSIS_JOBS[job_id] = {"status": "complete", "data": best_bets, "progress": 100}
+        ANALYSIS_JOBS[job_id] = {"status": "complete", "data": best_bets[:50], "progress": 100}
         print(f"✅ Scan terminé : {len(best_bets)} picks.")
 
 
 @app.post("/analysis/start-scan")
-def start_best_bets_scan(scan_req: ScanRequest, background_tasks: BackgroundTasks):
+def start_best_bets_scan(scan_req: ScanRequest | None = Body(default=None), background_tasks: BackgroundTasks = None):
     job_id = str(uuid.uuid4())
     ANALYSIS_JOBS[job_id] = {"status": "running", "data": [], "progress": 0}
-    background_tasks.add_task(run_best_bets_scan, job_id, scan_req.markets)
+    markets = scan_req.markets if scan_req else None
+    background_tasks.add_task(run_best_bets_scan, job_id, markets)
     return {"job_id": job_id}
 
 
@@ -650,3 +663,71 @@ def get_game_lineups(nba_game_id: str, db: Session = Depends(get_db)):
         "home_roster": _normalize_roster(home_roster),
         "away_roster": _normalize_roster(away_roster)
     }
+
+
+class IngestionRunDTO(BaseModel):
+    id: int
+    source: str
+    scope: Optional[str]
+    version_tag: Optional[str]
+    status: str
+    started_at: datetime
+    ended_at: Optional[datetime]
+    meta: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+class OddsSnapshotDTO(BaseModel):
+    id: int
+    game_id: str
+    player_id: Optional[int]
+    market: str
+    line: Optional[float]
+    price_over: Optional[float]
+    price_under: Optional[float]
+    bookmaker: str
+    fetched_at: datetime
+    ttl_expire_at: Optional[datetime]
+
+    class Config:
+        orm_mode = True
+
+
+@app.get("/datahub/ingestion-runs", response_model=List[IngestionRunDTO])
+def list_ingestion_runs(source: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
+    q = db.query(models.IngestionRun).order_by(models.IngestionRun.started_at.desc())
+    if source:
+        q = q.filter(models.IngestionRun.source == source)
+    return q.limit(min(limit, 200)).all()
+
+
+@app.get("/datahub/odds-snapshots", response_model=List[OddsSnapshotDTO])
+def list_odds_snapshots(game_id: str = Query(...), bookmaker: Optional[str] = None, limit: int = 200, db: Session = Depends(get_db)):
+    q = db.query(models.OddsSnapshot).filter(models.OddsSnapshot.game_id == game_id).order_by(models.OddsSnapshot.fetched_at.desc())
+    if bookmaker:
+        q = q.filter(models.OddsSnapshot.bookmaker == bookmaker)
+    return q.limit(min(limit, 500)).all()
+
+
+@app.get("/analysis/odds-cache/{nba_game_id}")
+def get_odds_cache_for_game(nba_game_id: str, bookmaker: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(models.OddsSnapshot).filter(models.OddsSnapshot.game_id == nba_game_id)
+    if bookmaker:
+        q = q.filter(models.OddsSnapshot.bookmaker == bookmaker)
+    rows = q.order_by(models.OddsSnapshot.fetched_at.desc()).all()
+    out = []
+    for r in rows:
+        out.append({
+            "game_id": r.game_id,
+            "player_id": r.player_id,
+            "market": r.market,
+            "line": float(r.line) if r.line is not None else None,
+            "price_over": float(r.price_over) if r.price_over is not None else None,
+            "price_under": float(r.price_under) if r.price_under is not None else None,
+            "bookmaker": r.bookmaker,
+            "fetched_at": r.fetched_at,
+            "ttl_expire_at": r.ttl_expire_at
+        })
+    return {"odds": out}

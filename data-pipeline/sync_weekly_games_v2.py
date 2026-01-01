@@ -124,11 +124,39 @@ def fetch_weekly_games_http():
     return games
 
 
+def start_ingestion_run(cur, source: str, scope: str = None, version_tag: str = None):
+    cur.execute(
+        """
+        INSERT INTO ingestion_runs (source, scope, version_tag, status, started_at)
+        VALUES (%s, %s, %s, 'running', CURRENT_TIMESTAMP)
+        RETURNING id
+        """,
+        (source, scope, version_tag)
+    )
+    return cur.fetchone()[0]
+
+
+def finish_ingestion_run(cur, run_id: int, status: str = 'success', meta: dict | None = None):
+    cur.execute(
+        """
+        UPDATE ingestion_runs
+        SET status = %s,
+            ended_at = CURRENT_TIMESTAMP,
+            meta = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (status, json.dumps(meta or {}), run_id)
+    )
+
+
 def sync_weekly_games(force_refresh=False):
     """Synchronise les matchs de la semaine en BDD."""
     try:
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
+
+        ingestion_run_id = start_ingestion_run(cur, source="nba.com", scope="games_schedule")
 
         # Vérifier le cache
         if not force_refresh:
@@ -149,6 +177,8 @@ def sync_weekly_games(force_refresh=False):
                     """)
                     cached = cur.fetchone()[0]
                     print(f"📦 Cache valide : {cached} matchs")
+                    finish_ingestion_run(cur, ingestion_run_id, status='cached', meta={"cached": cached})
+                    conn.commit()
                     cur.close()
                     conn.close()
                     return {"new": 0, "updated": 0, "cached": cached}
@@ -157,6 +187,8 @@ def sync_weekly_games(force_refresh=False):
         games = fetch_weekly_games_http()
 
         if not games:
+            finish_ingestion_run(cur, ingestion_run_id, status='failed', meta={"reason": "no_games"})
+            conn.commit()
             cur.close()
             conn.close()
             return {"new": 0, "updated": 0, "cached": 0}
@@ -200,20 +232,27 @@ def sync_weekly_games(force_refresh=False):
                     game.get('away_score'), game.get('arena')
                 ))
                 new_count += 1
-                print(f"   ✨ {game['away_team_code']} @ {game['home_team_code']} ({game['game_date']})")
+
+        finish_ingestion_run(cur, ingestion_run_id, status='success', meta={
+            "new": new_count,
+            "updated": updated_count,
+            "total": len(games)
+        })
 
         conn.commit()
-        print(f"\n🎉 Sync terminée ! {new_count} nouveaux, {updated_count} màj")
-
+        print(f"🎉 Matchs synchronisés ! New: {new_count}, Updated: {updated_count}")
         cur.close()
         conn.close()
 
         return {"new": new_count, "updated": updated_count, "cached": 0}
 
     except Exception as e:
-        print(f"❌ Erreur : {e}")
-        import traceback
-        traceback.print_exc()
+        try:
+            finish_ingestion_run(cur, ingestion_run_id, status='failed', meta={"error": str(e)})
+            conn.commit()
+        except Exception:
+            pass
+        print(f"❌ Erreur sync_weekly_games: {e}")
         return {"new": 0, "updated": 0, "cached": 0}
 
 
@@ -271,4 +310,3 @@ if __name__ == "__main__":
 
     for game in games[:5]:
         print(f"   {game['game_date']} - {game['away_team']} @ {game['home_team']}")
-

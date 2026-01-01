@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, Date, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, Date, DateTime, Text, UniqueConstraint, DECIMAL
 from sqlalchemy.orm import relationship
 from .database import Base
 from datetime import datetime
@@ -132,4 +132,88 @@ class BettingOdds(Base):
     # Pour savoir si la donnée est périmée
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    player = relationship("Player")
+
+
+class Team(Base):
+    __tablename__ = "team"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nba_team_id = Column(Integer, unique=True)
+    code = Column(String(5), unique=True, index=True)
+    name = Column(String)
+    conference = Column(String(10))
+    division = Column(String(20))
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class IdMapping(Base):
+    __tablename__ = "id_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String(20), index=True)  # 'player' ou 'team'
+    entity_id = Column(Integer, index=True)
+    source = Column(String(30), index=True)  # 'nba', 'espn', 'odds'
+    external_id = Column(String(100))
+    display_name = Column(String)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (UniqueConstraint('entity_type', 'source', 'external_id', name='uq_id_mapping_source'),)
+
+
+class Alias(Base):
+    __tablename__ = "aliases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String(20), index=True)  # 'player' ou 'team'
+    entity_id = Column(Integer, index=True)
+    source = Column(String(30), default='manual')
+    alias = Column(String(150), index=True)
+    normalized_alias = Column(String(150), index=True)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (UniqueConstraint('entity_type', 'alias', 'source', name='uq_alias_source'),)
+
+
+class IngestionRun(Base):
+    __tablename__ = "ingestion_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String(50), index=True, nullable=False)
+    scope = Column(String(50))
+    version_tag = Column(String(50))
+    status = Column(String(20), default='running')
+    started_at = Column(DateTime, default=datetime.now)
+    ended_at = Column(DateTime)
+    meta = Column(Text)  # store JSON as text; convert at service layer
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class OddsSnapshot(Base):
+    __tablename__ = "odds_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ingestion_run_id = Column(Integer, ForeignKey("ingestion_runs.id"))
+    game_id = Column(String(50), index=True, nullable=False)
+    player_id = Column(Integer, ForeignKey("player.id"))
+    market = Column(String(50), index=True, nullable=False)
+    line = Column(DECIMAL(10, 2))
+    price_over = Column(DECIMAL(10, 2))
+    price_under = Column(DECIMAL(10, 2))
+    bookmaker = Column(String(50), index=True, nullable=False)
+    source = Column(String(30), default='the-odds-api')
+    fetched_at = Column(DateTime, default=datetime.now)
+    ttl_expire_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    ingestion_run = relationship("IngestionRun")
     player = relationship("Player")

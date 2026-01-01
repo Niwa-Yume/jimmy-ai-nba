@@ -1,6 +1,7 @@
 import psycopg2
 from nba_api.stats.endpoints import playergamelog
 import hashlib
+import json
 
 # --- CONFIGURATION ---
 DB_PARAMS = {
@@ -10,6 +11,32 @@ DB_PARAMS = {
     "host": "localhost",
     "port": "5432"
 }
+
+def start_ingestion_run(cur, source: str, scope: str = None, version_tag: str = None):
+    cur.execute(
+        """
+        INSERT INTO ingestion_runs (source, scope, version_tag, status, started_at)
+        VALUES (%s, %s, %s, 'running', CURRENT_TIMESTAMP)
+        RETURNING id
+        """,
+        (source, scope, version_tag)
+    )
+    return cur.fetchone()[0]
+
+
+def finish_ingestion_run(cur, run_id: int, status: str = 'success', meta: dict | None = None):
+    cur.execute(
+        """
+        UPDATE ingestion_runs
+        SET status = %s,
+            ended_at = CURRENT_TIMESTAMP,
+            meta = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (status, json.dumps(meta or {}), run_id)
+    )
+
 
 def sync_player_stats(nba_player_id, season='2024-25', limit=82):
     """
@@ -31,15 +58,18 @@ def sync_player_stats(nba_player_id, season='2024-25', limit=82):
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
 
+        ingestion_run_id = start_ingestion_run(cur, source="nba_api", scope=f"player_stats:{nba_player_id}")
+
         # Vérifier que le joueur existe en BDD
         cur.execute("SELECT id FROM player WHERE nba_player_id = %s", (nba_player_id,))
         player_row = cur.fetchone()
 
         if not player_row:
             print(f"❌ Joueur {nba_player_id} introuvable en BDD.")
+            finish_ingestion_run(cur, ingestion_run_id, status='failed', meta={"reason": "player_missing"})
             cur.close()
             conn.close()
-            return (0, 0)
+            return (0, 0, 0)
 
         player_internal_id = player_row[0]
         new_games = 0
@@ -122,6 +152,14 @@ def sync_player_stats(nba_player_id, season='2024-25', limit=82):
                     """, (g.get('MATCHUP'), existing_id))
                     cached_games += 1
 
+        finish_ingestion_run(cur, ingestion_run_id, status='success', meta={
+            "player_id": nba_player_id,
+            "new": new_games,
+            "updated": updated_count,
+            "cached": cached_games,
+            "total": len(games)
+        })
+
         conn.commit()
         print(f"🎉 Stats du joueur {nba_player_id} sauvegardées !")
         print(f"   📊 {new_games} nouveaux, {cached_games} en cache, {updated_count} mises à jour")
@@ -131,6 +169,11 @@ def sync_player_stats(nba_player_id, season='2024-25', limit=82):
         return (new_games, cached_games, updated_count)
 
     except Exception as e:
+        try:
+            finish_ingestion_run(cur, ingestion_run_id, status='failed', meta={"error": str(e)})
+            conn.commit()
+        except Exception:
+            pass
         print(f"❌ Erreur : {e}")
         return (0, 0, 0)
 

@@ -74,7 +74,7 @@ class BettingOddsProvider:
             return False
 
     def get_event_id(self, home_team_code, away_team_code):
-        """Récupère l'ID du match chez The-Odds-API."""
+        """Récupère l'ID du match chez The-Odds-API en matching home/away (pas uniquement Bet365)."""
         if self.quota_exceeded or not self.api_key: return None
 
         try:
@@ -84,13 +84,9 @@ class BettingOddsProvider:
             if res.status_code in [401, 429]:
                 print(f"🚨 ALERTE API : Quota dépassé ou clé invalide ({res.status_code}). Tentative de changement de clé.")
                 if self.switch_to_next_key():
-                    # Retry with new key
                     params["apiKey"] = self.api_key
                     res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
-                    if res.status_code not in [401, 429]:
-                        print("   ✅ Nouvelle clé fonctionnelle.")
-                    else:
-                        print("   ❌ Nouvelle clé aussi épuisée.")
+                    if res.status_code in [401, 429]:
                         self.quota_exceeded = True
                         return None
                 else:
@@ -103,18 +99,46 @@ class BettingOddsProvider:
 
             events = res.json()
             home_name = TEAM_MAPPING.get(home_team_code)
+            away_name = TEAM_MAPPING.get(away_team_code)
 
-            # Recherche de l'ID du match
+            def norm(s):
+                return (s or "").lower().strip()
+
             for e in events:
-                if home_name and home_name in e.get("home_team", ""):
+                h = norm(e.get("home_team"))
+                a = norm(e.get("away_team"))
+                if home_name and away_name:
+                    if norm(home_name) in h and norm(away_name) in a:
+                        return e["id"]
+                    if norm(home_name) in a and norm(away_name) in h:  # swapped safety
+                        return e["id"]
+
+            # Fallback : premier event qui contient l'une des équipes
+            for e in events:
+                h = norm(e.get("home_team")); a = norm(e.get("away_team"))
+                if (home_name and norm(home_name) in h) or (away_name and norm(away_name) in a):
                     return e["id"]
 
-            print(f"⚠️ Match non trouvé sur Bet365/Odds pour : {home_team_code} vs {away_team_code}")
+            print(f"⚠️ Match non trouvé sur The-Odds-API pour : {home_team_code} vs {away_team_code}")
             return None
 
         except Exception as e:
             print(f"❌ Exception API Events: {e}")
         return None
+
+    def _select_bookmaker(self, bookmakers: list):
+        """Choisit le bookmaker le plus pertinent (Bet365/FanDuel/DK sinon premier avec markets)."""
+        if not bookmakers:
+            return None
+        preferred = ["bet365", "fanduel", "draftkings"]
+        for key in preferred:
+            for b in bookmakers:
+                if key in b.get("key", "").lower() and b.get("markets"):
+                    return b
+        for b in bookmakers:
+            if b.get("markets"):
+                return b
+        return bookmakers[0]
 
     def update_odds_for_game(self, db: Session, nba_game_id: str, home_code: str, away_code: str):
         """
@@ -171,10 +195,9 @@ class BettingOddsProvider:
                 print("   ⚠️ Aucune cote bookmaker disponible pour ce match.")
                 return False
 
-            # On cherche Bet365, FanDuel ou DraftKings, sinon le premier
-            bookie = next(
-                (b for b in bookmakers if any(x in b["key"].lower() for x in ["bet365", "fanduel", "draftkings"])),
-                bookmakers[0])
+            bookie = self._select_bookmaker(bookmakers)
+            if not bookie:
+                return False
             print(f"   ✅ Source des cotes : {bookie['title']}")
 
             # Suppression anciens records pour ce match
@@ -235,3 +258,115 @@ class BettingOddsProvider:
             models.BettingOdds.game_id == game_id,
             models.BettingOdds.market == market
         ).first()
+
+    def _has_fresh_snapshots(self, db: Session, game_id: str, ttl_hours: int = 4):
+        cutoff = datetime.utcnow() - timedelta(hours=ttl_hours)
+        return db.query(models.OddsSnapshot).filter(
+            models.OddsSnapshot.game_id == game_id,
+            models.OddsSnapshot.fetched_at >= cutoff
+        ).first() is not None
+
+    def fetch_odds_snapshots_for_game(self, db: Session, game_id: str, home_code: str, away_code: str,
+                                      ingestion_run_id: int | None = None, ttl_hours: int = 4):
+        """Récupère les cotes et les écrit dans odds_snapshots avec TTL et optional ingestion_run_id."""
+        if self.quota_exceeded or not self.api_key:
+            return False
+
+        if self._has_fresh_snapshots(db, game_id, ttl_hours=ttl_hours):
+            return True  # cache valide
+
+        event_id = self.get_event_id(home_code, away_code)
+        if not event_id:
+            return False
+
+        try:
+            params = {
+                "apiKey": self.api_key,
+                "regions": "us",
+                "markets": "player_points,player_rebounds,player_assists",
+                "oddsFormat": "decimal"
+            }
+            res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
+
+            if res.status_code in [401, 429]:
+                if self.switch_to_next_key():
+                    params["apiKey"] = self.api_key
+                    res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
+                else:
+                    return False
+
+            if res.status_code != 200:
+                return False
+
+            data = res.json()
+            bookmakers = data.get("bookmakers", [])
+            if not bookmakers:
+                return False
+
+            bookie = self._select_bookmaker(bookmakers)
+            if not bookie:
+                return False
+
+            players_cache = {p.id: normalize_name(p.full_name) for p in db.query(models.Player).all()}
+            ttl_expire_at = datetime.utcnow() + timedelta(hours=ttl_hours)
+            rows = []
+
+            for market in bookie.get("markets", []):
+                m_type = market["key"].replace("player_", "")
+                for outcome in market.get("outcomes", []):
+                    api_name_norm = normalize_name(outcome.get("description"))
+                    line = outcome.get("point")
+
+                    matched_id = None
+                    for pid, pname in players_cache.items():
+                        if pname == api_name_norm:
+                            matched_id = pid; break
+                        if len(api_name_norm) > 4 and api_name_norm in pname:
+                            matched_id = pid; break
+
+                    if not matched_id:
+                        continue
+
+                    if outcome.get("name") == "Over":
+                        rows.append(models.OddsSnapshot(
+                            ingestion_run_id=ingestion_run_id,
+                            game_id=game_id,
+                            player_id=matched_id,
+                            market=m_type,
+                            line=line,
+                            price_over=outcome.get("price"),
+                            price_under=None,
+                            bookmaker=bookie.get("title"),
+                            fetched_at=datetime.utcnow(),
+                            ttl_expire_at=ttl_expire_at
+                        ))
+
+            if not rows:
+                return False
+
+            db.add_all(rows)
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"   ❌ Crash fetch_odds_snapshots_for_game: {e}")
+            db.rollback()
+            return False
+
+    def get_snapshot_odds(self, db: Session, game_id: str, player_id: int, market: str):
+        """Retourne la dernière cote snapshot non expirée pour un joueur/marché/match."""
+        now = datetime.utcnow()
+        row = db.query(models.OddsSnapshot).filter(
+            models.OddsSnapshot.game_id == game_id,
+            models.OddsSnapshot.player_id == player_id,
+            models.OddsSnapshot.market == market,
+            (models.OddsSnapshot.ttl_expire_at.is_(None)) | (models.OddsSnapshot.ttl_expire_at > now)
+        ).order_by(models.OddsSnapshot.fetched_at.desc()).first()
+        if not row:
+            return None
+        return {
+            "line": float(row.line) if row.line is not None else None,
+            "price_over": float(row.price_over) if row.price_over is not None else None,
+            "price_under": float(row.price_under) if row.price_under is not None else None,
+            "bookmaker": row.bookmaker,
+            "fetched_at": row.fetched_at,
+        }

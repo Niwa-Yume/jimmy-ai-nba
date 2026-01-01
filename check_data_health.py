@@ -45,6 +45,37 @@ def check_health():
         print(f"   - Lignes de stats : {stats_count}")
         print(f"   - Dernier ajout : {last_stats_update}")
 
+        # 5. Vérifier les mappings et alias
+        cur.execute("SELECT COUNT(*) FROM id_mappings")
+        idmap_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM aliases")
+        alias_count = cur.fetchone()[0]
+        print(f"\n🪪 MAPPINGS & ALIAS :")
+        print(f"   - id_mappings : {idmap_count}")
+        print(f"   - aliases : {alias_count}")
+
+        # 6. Vérifier les runs d'ingestion
+        cur.execute("""
+            SELECT COUNT(*), MAX(started_at), MAX(ended_at)
+            FROM ingestion_runs
+        """)
+        run_count, last_started, last_ended = cur.fetchone()
+        print(f"\n⏱️ INGESTION RUNS :")
+        print(f"   - Total runs : {run_count}")
+        print(f"   - Dernier start : {last_started}")
+        print(f"   - Dernier end   : {last_ended}")
+
+        # 7. Vérifier le cache des cotes
+        cur.execute("""
+            SELECT COUNT(*), MAX(fetched_at), MIN(ttl_expire_at) 
+            FROM odds_snapshots
+        """)
+        odds_count, last_odds_fetch, next_expire = cur.fetchone()
+        print(f"\n💰 COTES (cache) :")
+        print(f"   - Snapshots : {odds_count}")
+        print(f"   - Dernière récupération : {last_odds_fetch}")
+        print(f"   - Prochain TTL expirant : {next_expire}")
+
         print("\n-------------------------------------")
         
         # Alerte si données vieilles
@@ -52,6 +83,12 @@ def check_health():
             print("⚠️ ATTENTION : Les blessures datent de plus de 2h. Lancez 'python data-pipeline/sync_injuries_v2.py'")
         else:
             print("✅ Les blessures semblent à jour.")
+
+        if last_games_fetch and (datetime.now() - last_games_fetch).seconds > 10800: # 3 heures
+            print("⚠️ Matchs : rafraîchir via 'python data-pipeline/sync_weekly_games_v2.py'")
+
+        if last_odds_fetch and (datetime.now() - last_odds_fetch).seconds > 3600:
+            print("⚠️ Cotes : rafraîchir le cache odds (TTL > 1h)")
 
         cur.close()
         conn.close()
