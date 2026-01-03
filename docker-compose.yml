@@ -3,10 +3,11 @@ services:
     image: postgres:15-alpine
     container_name: jimmy_db
     restart: always
+    env_file: .env
     environment:
-      POSTGRES_USER: jimmy_user
-      POSTGRES_PASSWORD: secure_password_123
-      POSTGRES_DB: jimmy_nba_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
@@ -14,6 +15,28 @@ services:
       - postgres_data:/var/lib/postgresql/data
       # Script d'init (exécuté uniquement au premier lancement)
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  backend:
+    build: ./backend
+    container_name: jimmy_backend
+    restart: always
+    env_file: .env
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  frontend:
+    build: ./frontend
+    container_name: jimmy_frontend
+    restart: always
+    env_file: .env
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
 
 volumes:
   postgres_data:

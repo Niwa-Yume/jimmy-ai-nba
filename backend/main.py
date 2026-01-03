@@ -20,6 +20,8 @@ import uuid
 from typing import List, Optional
 from pydantic import BaseModel
 import random
+import subprocess
+from pathlib import Path
 
 # --- CACHE TTL CONFIGS ---
 PLAYER_STATS_TTL_HOURS = 1
@@ -275,6 +277,10 @@ def _attach_local_ids_and_injuries(db: Session, players: list[dict]):
                     inj = db.query(models.PlayerInjury).filter(models.PlayerInjury.player_id == row.id,
                                                                models.PlayerInjury.is_active == True).first()
                     p["injury_status"] = inj.status if inj else "HEALTHY"
+                inj = db.query(models.PlayerInjury).filter(models.PlayerInjury.player_id == row.id,
+                                                           models.PlayerInjury.is_active == True).first()
+                if inj:
+                    p["play_probability"] = inj.play_probability
                 if row.nba_player_id == 0 and nba_id > 0:
                     row.nba_player_id = nba_id
                     db.commit()
@@ -396,10 +402,23 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
     }
 
 
+# --- SYNC INJURIES HELPER ---
+def _run_sync_injuries():
+    try:
+        script_path = Path(__file__).resolve().parent.parent / "data-pipeline" / "sync_injuries.py"
+        if not script_path.exists():
+            print("⚠️ sync_injuries.py introuvable, skip refresh blessures.")
+            return
+        subprocess.run(["python", str(script_path), "--quiet"], check=False, timeout=120)
+    except Exception as e:
+        print(f"⚠️ sync_injuries échoué : {e}")
+
+
 # --- MAIN SCAN LOOP ---
 
 def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
+    _run_sync_injuries()
     with Session(engine) as db:
         now = datetime.utcnow()
         # Prioriser les matchs pour lesquels on a des snapshots d'odds non expirés
@@ -467,21 +486,32 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         odds_source = odds_db.bookmaker if odds_db else None
 
                     score, tag = calculate_confidence_score(data, line if line else 0, 0)
+
+                    injury_status = p.get('injury_status', 'HEALTHY')
+                    play_prob = p.get('play_probability')
+                    injury_factor = 1.0
+                    status_penalty = {
+                        'OUT': 0.0,
+                        'DOUBTFUL': 0.5,
+                        'QUESTIONABLE': 0.7,
+                        'DAY_TO_DAY': 0.7,
+                        'GTD': 0.7,
+                        'PROBABLE': 0.9,
+                    }
+                    injury_factor *= status_penalty.get(str(injury_status).upper(), 1.0)
+                    if play_prob is not None:
+                        injury_factor *= max(0.0, min(1.0, float(play_prob) / 100.0))
+                    score *= injury_factor
+
                     if score < 60 or not line:
                         continue
-
-                    injury_status = None
-                    try:
-                        injury_status = player.current_injury_status if player else None
-                    except Exception:
-                        injury_status = None
 
                     base_pick = {"player": p['full_name'], "team": game.home_team_code if p in home_roster else game.away_team_code,
                                  "opponent": game.away_team_code if p in home_roster else game.home_team_code,
                                  "market": stat, "line": line, "odds": odds_over if proj > line else odds_under,
-                                 "projection": proj, "confidence": f"{tag} ({score})", "ev": score,
+                                 "projection": proj, "confidence": f"{tag} ({score:.0f})", "ev": score,
                                  "game_id": game.nba_game_id, "player_id": p['id'], "bet_type": "Over" if proj > line else "Under",
-                                 "odds_source": odds_source, "injury_status": injury_status}
+                                 "odds_source": odds_source, "injury_status": injury_status, "play_probability": play_prob}
 
                     if proj > line and odds_over:
                         best_bets.append(base_pick)

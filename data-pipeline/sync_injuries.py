@@ -15,18 +15,19 @@ Sources :
 - Secondaire : NBA.com Injury Report
 """
 
+import os
 import psycopg2
 import requests
 from datetime import datetime, timedelta
 import json
 
-# Configuration BDD
+# Configuration BDD via variables d'environnement (fallback valeurs locales)
 DB_PARAMS = {
-    "dbname": "jimmy_nba_db",
-    "user": "jimmy_user",
-    "password": "secure_password_123",
-    "host": "localhost",
-    "port": "5432"
+    "dbname": os.getenv("DB_NAME", "jimmy_nba_db"),
+    "user": os.getenv("DB_USER", "jimmy_user"),
+    "password": os.getenv("DB_PASSWORD", "secure_password_123"),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": os.getenv("DB_PORT", "5432"),
 }
 
 # Mapping status → play_probability
@@ -261,13 +262,24 @@ def sync_injuries(force_refresh=False):
             player_id, nba_player_id = map_espn_to_nba_player(player_name, conn)
 
             if not player_id:
-                print(f"   ⚠️ Joueur non trouvé en BDD : {player_name}")
+                # Création automatique du joueur si introuvable
+                player_id, nba_player_id = ensure_player_exists(conn, player_name, status)
+            if not player_id:
+                print(f"   ⚠️ Joueur non trouvé ni créé : {player_name}")
                 continue
+
+            # Garantir une valeur pour nba_player_id (colonne NOT NULL)
+            if nba_player_id is None:
+                nba_player_id = 0
 
             current_injured_players.add(player_id)
 
             # Calculer play_probability
             play_prob = STATUS_PROBABILITY.get(status, 50)
+
+            # Nettoyer les champs de blessure pour éviter les NULL inattendus
+            injury_type = injury.get('injury_type') or injury.get('injury_type', None)
+            injury_detail = injury.get('injury_detail') or None
 
             # Vérifier si une blessure active existe
             cur.execute("""
@@ -293,7 +305,7 @@ def sync_injuries(force_refresh=False):
                             last_verified_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s
-                    """, (status, injury.get('injury_type'), injury.get('injury_detail'),
+                    """, (status, injury_type, injury_detail,
                           play_prob, existing[0]))
 
                     updated_count += 1
@@ -307,16 +319,19 @@ def sync_injuries(force_refresh=False):
                     """, (existing[0],))
             else:
                 # INSERT nouvelle blessure
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO player_injuries 
                     (player_id, nba_player_id, status, injury_type, injury_detail,
                      injury_date, play_probability, source, source_url, is_active)
                     VALUES (%s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, TRUE)
-                """, (
-                    player_id, nba_player_id, status,
-                    injury.get('injury_type'), injury.get('injury_detail'),
-                    play_prob, injury.get('source', 'ESPN'), injury.get('source_url')
-                ))
+                    """,
+                    (
+                        player_id, nba_player_id, status,
+                        injury_type, injury_detail,
+                        play_prob, injury.get('source', 'ESPN'), injury.get('source_url')
+                    )
+                )
 
                 new_count += 1
                 print(f"   ✨ NOUVEAU: {player_name} - {status} ({injury.get('injury_type')})")
@@ -425,6 +440,56 @@ def get_active_injuries_from_db():
     except Exception as e:
         print(f"❌ Erreur lecture BDD : {e}")
         return []
+
+
+# Helpers de création auto pour joueurs manquants
+
+def ensure_player_exists(conn, full_name, status):
+    """Crée un joueur minimal si introuvable en BDD et retourne (player_id, nba_player_id)."""
+    if not full_name:
+        return None, None
+    cur = conn.cursor()
+    cur.execute("SELECT id, nba_player_id FROM player WHERE UPPER(full_name) = %s LIMIT 1", (full_name.upper(),))
+    row = cur.fetchone()
+    if row:
+        cur.close()
+        return row[0], row[1]
+    # Essayer insertion avec nba_player_id NULL pour éviter le conflit sur la clé unique
+    try:
+        cur.execute(
+            """
+            INSERT INTO player (full_name, nba_player_id, position, is_active, current_injury_status, injury_updated_at)
+            VALUES (%s, NULL, %s, TRUE, %s, CURRENT_TIMESTAMP)
+            RETURNING id, nba_player_id
+            """,
+            (full_name, 'UNK', status)
+        )
+        new_row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return new_row[0], new_row[1]
+    except Exception:
+        conn.rollback()
+        # Dernier recours : insertion avec nba_player_id = 0 si NULL interdit
+        try:
+            cur.execute(
+                """
+                INSERT INTO player (full_name, nba_player_id, position, is_active, current_injury_status, injury_updated_at)
+                VALUES (%s, 0, %s, TRUE, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (nba_player_id) DO NOTHING
+                RETURNING id, nba_player_id
+                """,
+                (full_name, 'UNK', status)
+            )
+            new_row = cur.fetchone()
+            conn.commit()
+            cur.close()
+            return (new_row[0], new_row[1]) if new_row else (None, None)
+        except Exception as e:
+            conn.rollback()
+            cur.close()
+            print(f"   ❌ Création joueur échouée pour {full_name}: {e}")
+            return None, None
 
 
 if __name__ == "__main__":
