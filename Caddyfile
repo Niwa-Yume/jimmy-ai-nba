@@ -1,0 +1,21 @@
+# Caddy reverse proxy for jimmyainba.duckdns.org
+# Route API/backend paths to backend:8000, everything else to frontend:8501
+
+jimmyainba.duckdns.org {
+    encode gzip
+
+    # Backend routes (ajuste si besoin)
+    @api path "/health" "/docs" "/openapi.json" "/analysis/*" "/games/*" "/analysis/start-scan" "/analysis/scan-results/*" "/analysis/list-jobs" "/analysis/odds-cache/*"
+    reverse_proxy @api backend:8000
+
+    # Frontend (par défaut tout le reste)
+    reverse_proxy frontend:8501
+
+    # Headers de base
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+    }
+}
+
