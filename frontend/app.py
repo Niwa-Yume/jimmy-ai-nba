@@ -39,8 +39,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# URL backend FastAPI
-API_URL = "http://127.0.0.1:8000"
+# URL backend FastAPI - détection automatique de l'environnement
+import os
+API_URL = os.getenv("BACKEND_URL", "http://backend:8000") if os.getenv("DOCKER_ENV") else "http://127.0.0.1:8000"
 
 # --- STYLING CSS AVANCÉ ---
 st.markdown("""

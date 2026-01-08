@@ -509,20 +509,27 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         injury_factor *= max(0.0, min(1.0, float(play_prob) / 100.0))
                     score *= injury_factor
 
-                    # Seuil réduit : 45 au lieu de 60 pour avoir plus de picks
-                    if score < 45 or not line:
+                    # Seuil très bas : 35 au lieu de 45 pour maximiser les picks
+                    # On filtre seulement les picks vraiment mauvais
+                    if score < 35 or not line:
                         continue
+
+                    # Calculer l'écart entre projection et ligne pour prioriser les picks évidents
+                    diff = abs(proj - line)
+                    edge = (diff / line * 100) if line > 0 else 0  # % d'écart
 
                     base_pick = {"player": p['full_name'], "team": game.home_team_code if p in home_roster else game.away_team_code,
                                  "opponent": game.away_team_code if p in home_roster else game.home_team_code,
                                  "market": stat, "line": line, "odds": odds_over if proj > line else odds_under,
                                  "projection": proj, "confidence": f"{tag} ({score:.0f})", "ev": score,
                                  "game_id": game.nba_game_id, "player_id": p['id'], "bet_type": "Over" if proj > line else "Under",
-                                 "odds_source": odds_source, "injury_status": injury_status, "play_probability": play_prob}
+                                 "odds_source": odds_source, "injury_status": injury_status, "play_probability": play_prob,
+                                 "edge": round(edge, 1)}  # Ajout du % d'écart pour tri
 
-                    if proj > line and odds_over:
+                    # Accepter les picks avec au moins 3% d'écart OU score > 50
+                    if (proj > line and odds_over and edge >= 3) or score > 50:
                         best_bets.append(base_pick)
-                    elif proj < line and odds_under:
+                    elif (proj < line and odds_under and edge >= 3) or score > 50:
                         base_pick["bet_type"] = "Under"
                         best_bets.append(base_pick)
 

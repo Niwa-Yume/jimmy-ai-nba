@@ -38,6 +38,9 @@ services:
     container_name: jimmy_frontend
     restart: always
     env_file: .env
+    environment:
+      DOCKER_ENV: "true"
+      BACKEND_URL: "http://backend:8000"
     depends_on:
       - backend
     ports:
