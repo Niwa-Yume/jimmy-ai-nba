@@ -157,17 +157,7 @@ DAILY_CACHE = {}
 
 
 class Bet(BaseModel):
-    player: str
-    team: str
-    opponent: str
-    market: str
-    line: float
-    odds: Optional[float]
-    projection: float
-    confidence: str
-    ev: float
-    game_id: str
-    player_id: int
+    # ...existing code...
     bet_type: str
 
 
@@ -175,6 +165,25 @@ class ScanRequest(BaseModel):
     markets: Optional[list[str]] = None
 
 
+# --- ROUTES ANALYSE / SCAN ---
+@app.post("/analysis/start-scan")
+async def start_scan(req: ScanRequest | None = Body(None), background_tasks: BackgroundTasks = None):
+    job_id = str(uuid.uuid4())
+    ANALYSIS_JOBS[job_id] = {"status": "queued", "data": [], "progress": 0}
+    markets = req.markets if req and req.markets else None
+    background_tasks.add_task(run_best_bets_scan, job_id, markets)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/analysis/scan-results/{job_id}")
+def get_scan_results(job_id: str):
+    job = ANALYSIS_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job inconnu")
+    return job
+
+
+# --- HELPERS ---
 _LINEUPS_CACHE: dict[str, dict] = {}
 
 
@@ -385,6 +394,9 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
     game = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id == game_id).first()
     team_code = game.home_team_code if game else "N/A"
 
+    # Taille d'échantillon sur le dataframe complet
+    sample_size = len(df)
+
     for stat in stats_list:
         if stat not in df.columns: continue
         season_avg = df[stat].mean()
@@ -399,7 +411,8 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
     return {
         "player": player.full_name,
         "opponent": "OPP",
-        "projections": projections
+        "projections": projections,
+        "sample_size": sample_size
     }
 
 
@@ -498,7 +511,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                     continue
 
                 # Récupérer le nombre de matchs pour la taille de l'échantillon
-                sample_size = len(proj_data.get('last_games', []))
+                sample_size = proj_data.get('sample_size') or len(proj_data.get('last_games', []))
 
                 for stat in (markets or ["points", "rebounds", "assists"]):
                     data = proj_data["projections"].get(stat)
