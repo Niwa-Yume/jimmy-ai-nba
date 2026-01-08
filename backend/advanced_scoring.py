@@ -20,9 +20,9 @@ class AdvancedScorer:
     """
 
     # Seuils de filtrage équilibrés pour picks de qualité
-    MIN_SCORE = 55  # Score minimum requis (55/100) - Assouplissement
-    MIN_EDGE = 6.0  # Edge minimum en % (6% min) - Plus réaliste
-    MIN_SAMPLE_SIZE = 10  # Nombre min de matchs pour projection fiable
+    MIN_SCORE = 50  # Score minimum requis (50/100) - Équilibré
+    MIN_EDGE = 3.5  # Edge minimum en % (3.5% min) - Réaliste pour NBA
+    MIN_SAMPLE_SIZE = 8  # Nombre min de matchs pour projection fiable
     MAX_PICKS = 25  # Maximum de picks à retourner
 
     # Poids des différents facteurs dans le score
@@ -244,14 +244,14 @@ class AdvancedScorer:
         self, injury_status: Optional[str], play_probability: Optional[float]
     ) -> float:
         """Facteur de pénalité (0.0 à 1.0) basé sur le statut blessure."""
-        # Pénalités équilibrées
+        # Pénalités équilibrées et réalistes
         status_penalties = {
             'OUT': 0.0,
-            'DOUBTFUL': 0.3,      # Pénalisé mais pas éliminé
-            'QUESTIONABLE': 0.7,  # Légère pénalité
-            'DAY_TO_DAY': 0.85,   # Très légère pénalité (courant)
-            'GTD': 0.7,           # Légère pénalité
-            'PROBABLE': 0.9,      # Presque pas pénalisé
+            'DOUBTFUL': 0.5,      # Pénalisé mais pas trop
+            'QUESTIONABLE': 0.85,  # Très légère pénalité
+            'DAY_TO_DAY': 0.95,   # Presque aucune pénalité (très courant en NBA)
+            'GTD': 0.85,          # Légère pénalité
+            'PROBABLE': 0.95,     # Presque pas pénalisé
             'HEALTHY': 1.0
         }
 
@@ -263,11 +263,11 @@ class AdvancedScorer:
         prob_factor = 1.0
         if play_probability is not None:
             prob = float(play_probability) / 100.0
-            # Pénalité si proba < 80%
-            if prob < 0.8:
-                prob_factor = prob * 0.9
+            # Pénalité si proba < 70%
+            if prob < 0.7:
+                prob_factor = prob * 0.8
             else:
-                prob_factor = prob
+                prob_factor = max(0.85, prob)
 
         return min(status_factor, prob_factor)
 
@@ -282,20 +282,19 @@ class AdvancedScorer:
         Détermine si un pick doit être inclus dans les résultats finaux.
         Critères équilibrés pour qualité sans trop filtrer.
         """
-        # Éliminer uniquement les OUT et DOUBTFUL (pas DAY_TO_DAY qui est trop courant)
-        risky_statuses = ['OUT', 'DOUBTFUL']
-        if injury_status and str(injury_status).upper() in risky_statuses:
+        # Éliminer uniquement les OUT (DOUBTFUL peut passer si bon score)
+        if injury_status and str(injury_status).upper() == 'OUT':
             return False
 
-        # Score minimum requis (55/100)
+        # Score minimum requis (50/100)
         if score < self.MIN_SCORE:
             return False
 
-        # Edge minimum requis (6%)
+        # Edge minimum requis (3.5%)
         if edge < self.MIN_EDGE:
             return False
 
-        # Échantillon minimum requis (10 matchs)
+        # Échantillon minimum requis (8 matchs)
         if sample_size < self.MIN_SAMPLE_SIZE:
             return False
 
