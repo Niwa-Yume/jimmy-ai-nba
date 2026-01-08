@@ -21,7 +21,7 @@ class AdvancedScorer:
 
     # Seuils de filtrage équilibrés pour picks de qualité
     MIN_SCORE = 50  # Score minimum requis (50/100) - Équilibré
-    MIN_EDGE = 3.5  # Edge minimum en % (3.5% min) - Réaliste pour NBA
+    MIN_EDGE = 1.5  # Edge minimum en % (1.5% min) - Réaliste pour NBA (bookmakers très précis)
     MIN_SAMPLE_SIZE = 8  # Nombre min de matchs pour projection fiable
     MAX_PICKS = 25  # Maximum de picks à retourner
 
@@ -67,10 +67,10 @@ class AdvancedScorer:
 
         # 1. EDGE : écart entre projection et ligne
         edge = abs(projection - line) / line * 100
-        if edge < self.MIN_EDGE:
-            return 0.0, "LOW_EDGE", {'edge': edge}
 
-        edge_score = min(100, edge * 5)  # 8% edge = 40pts, 20% edge = 100pts
+        # ⚠️ BUGFIX CRITIQUE : Ne pas filtrer ici ! Le filtrage se fait dans should_include_pick()
+        # On calcule le score complet d'abord, puis on filtre à la fin
+        edge_score = min(100, edge * 10)  # 5% edge = 50pts, 10% edge = 100pts
 
         # 2. FORME RÉCENTE : performance des 5 derniers matchs
         recent_form_score = self._calculate_recent_form(
