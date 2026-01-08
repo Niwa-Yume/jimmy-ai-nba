@@ -175,6 +175,29 @@ async def start_scan(req: ScanRequest | None = Body(None), background_tasks: Bac
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.get("/games/week")
+def get_weekly_games(days: int = 7, db: Session = Depends(get_db)):
+    days = max(1, min(days, 14))  # clamp between 1 and 14 days
+    today = datetime.utcnow().date()
+    end = today + timedelta(days=days)
+    games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date >= today,
+                                                models.GameSchedule.game_date <= end).order_by(models.GameSchedule.game_date).all()
+    return {
+        "games": [
+            {
+                "nba_game_id": g.nba_game_id,
+                "game_date": g.game_date.isoformat() if g.game_date else None,
+                "game_time": g.game_time,
+                "home_team": g.home_team_code,
+                "away_team": g.away_team_code,
+                "status": g.status,
+                "arena": g.arena,
+            }
+            for g in games
+        ]
+    }
+
+
 @app.get("/analysis/scan-results/{job_id}")
 def get_scan_results(job_id: str):
     job = ANALYSIS_JOBS.get(job_id)
