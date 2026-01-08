@@ -29,6 +29,7 @@ PLAYER_STATS_TTL_HOURS = 1
 
 # ✅ Import du module de Scoring
 from backend.scoring import calculate_confidence_score
+from backend.advanced_scoring import AdvancedScorer
 
 # ✅ Import NBA API
 from nba_api.stats.endpoints import commonteamroster, playergamelog
@@ -426,6 +427,9 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
     _run_sync_injuries()
     with Session(engine) as db:
+        # Initialiser le scorer avancé
+        scorer = AdvancedScorer(db)
+
         now = datetime.utcnow()
         # Prioriser les matchs pour lesquels on a des snapshots d'odds non expirés
         odds_games = [g[0] for g in db.query(models.OddsSnapshot.game_id)
@@ -468,11 +472,19 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
             for p in all_players:
                 if not p.get('id'): continue
+
+                # Déterminer l'équipe adverse
+                is_home = p in home_roster
+                opponent_code = game.away_team_code if is_home else game.home_team_code
+
                 try:
                     proj_data = compute_projection(p['id'], games=82, game_id=game.nba_game_id, db=db)
                 except Exception:
                     continue
                 if not proj_data or "projections" not in proj_data: continue
+
+                # Récupérer le nombre de matchs pour la taille de l'échantillon
+                sample_size = len(proj_data.get('last_games', []))
 
                 for stat in (markets or ["points", "rebounds", "assists"]):
                     data = proj_data["projections"].get(stat)
@@ -491,51 +503,65 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         odds_under = odds_db.odds_under if odds_db else None
                         odds_source = odds_db.bookmaker if odds_db else None
 
-                    score, tag = calculate_confidence_score(data, line if line else 0, 0)
+                    if not line or line <= 0:
+                        continue
 
                     injury_status = p.get('injury_status', 'HEALTHY')
                     play_prob = p.get('play_probability')
-                    injury_factor = 1.0
-                    status_penalty = {
-                        'OUT': 0.0,
-                        'DOUBTFUL': 0.5,
-                        'QUESTIONABLE': 0.7,
-                        'DAY_TO_DAY': 0.7,
-                        'GTD': 0.7,
-                        'PROBABLE': 0.9,
-                    }
-                    injury_factor *= status_penalty.get(str(injury_status).upper(), 1.0)
-                    if play_prob is not None:
-                        injury_factor *= max(0.0, min(1.0, float(play_prob) / 100.0))
-                    score *= injury_factor
 
-                    # Seuil très bas : 35 au lieu de 45 pour maximiser les picks
-                    # On filtre seulement les picks vraiment mauvais
-                    if score < 35 or not line:
+                    # ⭐ UTILISER LE SCORING AVANCÉ
+                    score, tag, details = scorer.calculate_advanced_score(
+                        player_id=p['id'],
+                        projection_data=proj_data,
+                        line=line,
+                        opponent_team_code=opponent_code,
+                        stat_type=stat,
+                        injury_status=injury_status,
+                        play_probability=play_prob
+                    )
+
+                    # Calculer l'edge pour l'affichage
+                    edge = abs(proj - line) / line * 100 if line > 0 else 0
+
+                    # ⭐ FILTRAGE STRICT avec le scorer avancé
+                    if not scorer.should_include_pick(score, edge, sample_size, injury_status):
                         continue
 
-                    # Calculer l'écart entre projection et ligne pour prioriser les picks évidents
-                    diff = abs(proj - line)
-                    edge = (diff / line * 100) if line > 0 else 0  # % d'écart
+                    base_pick = {
+                        "player": p['full_name'],
+                        "team": game.home_team_code if is_home else game.away_team_code,
+                        "opponent": opponent_code,
+                        "market": stat,
+                        "line": line,
+                        "odds": odds_over if proj > line else odds_under,
+                        "projection": proj,
+                        "confidence": f"{tag} ({score:.0f})",
+                        "ev": score,
+                        "game_id": game.nba_game_id,
+                        "player_id": p['id'],
+                        "bet_type": "Over" if proj > line else "Under",
+                        "odds_source": odds_source,
+                        "injury_status": injury_status,
+                        "play_probability": play_prob,
+                        "edge": round(edge, 1),
+                        "sample_size": sample_size,
+                        "scoring_details": details  # Détails du scoring pour debug
+                    }
 
-                    base_pick = {"player": p['full_name'], "team": game.home_team_code if p in home_roster else game.away_team_code,
-                                 "opponent": game.away_team_code if p in home_roster else game.home_team_code,
-                                 "market": stat, "line": line, "odds": odds_over if proj > line else odds_under,
-                                 "projection": proj, "confidence": f"{tag} ({score:.0f})", "ev": score,
-                                 "game_id": game.nba_game_id, "player_id": p['id'], "bet_type": "Over" if proj > line else "Under",
-                                 "odds_source": odds_source, "injury_status": injury_status, "play_probability": play_prob,
-                                 "edge": round(edge, 1)}  # Ajout du % d'écart pour tri
+                    best_bets.append(base_pick)
 
-                    # Accepter les picks avec au moins 3% d'écart OU score > 50
-                    if (proj > line and odds_over and edge >= 3) or score > 50:
-                        best_bets.append(base_pick)
-                    elif (proj < line and odds_under and edge >= 3) or score > 50:
-                        base_pick["bet_type"] = "Under"
-                        best_bets.append(base_pick)
-
+        # Trier par score (EV) décroissant et limiter à 15 meilleurs picks ULTRA-SÉLECTIFS
         best_bets.sort(key=lambda x: x['ev'], reverse=True)
-        ANALYSIS_JOBS[job_id] = {"status": "complete", "data": best_bets[:50], "progress": 100}
-        print(f"✅ Scan terminé : {len(best_bets)} picks.")
+        top_picks = best_bets[:15]
+
+        ANALYSIS_JOBS[job_id] = {
+            "status": "complete",
+            "data": top_picks,
+            "progress": 100,
+            "message": f"{len(top_picks)} picks ULTRA-SÉLECTIFS (sur {len(best_bets)} analysés)"
+        }
+        print(f"✅ Scan terminé : {len(top_picks)} picks sélectionnés (sur {len(best_bets)} potentiels).")
+
 
 
 @app.post("/analysis/start-scan")
