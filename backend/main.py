@@ -448,6 +448,18 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
         best_bets = []
         total_games = len(all_games)
 
+        # Compteurs debug pour analyser le filtrage
+        debug_counters = {
+            'total_checked': 0,
+            'no_projection': 0,
+            'no_line': 0,
+            'low_edge': 0,
+            'low_score': 0,
+            'low_sample': 0,
+            'out_status': 0,
+            'included': 0
+        }
+
         # Check quota au début
         if betting_provider.quota_exceeded:
             print("🛑 SCAN ARRÊTÉ : Quota API Odds dépassé. Les cotes ne seront pas mises à jour.")
@@ -481,14 +493,20 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                     proj_data = compute_projection(p['id'], games=82, game_id=game.nba_game_id, db=db)
                 except Exception:
                     continue
-                if not proj_data or "projections" not in proj_data: continue
+                if not proj_data or "projections" not in proj_data:
+                    debug_counters['no_projection'] += 1
+                    continue
 
                 # Récupérer le nombre de matchs pour la taille de l'échantillon
                 sample_size = len(proj_data.get('last_games', []))
 
                 for stat in (markets or ["points", "rebounds", "assists"]):
                     data = proj_data["projections"].get(stat)
-                    if not data: continue
+                    if not data:
+                        debug_counters['no_projection'] += 1
+                        continue
+
+                    debug_counters['total_checked'] += 1
 
                     proj = data.get('projection')
 
@@ -504,6 +522,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         odds_source = odds_db.bookmaker if odds_db else None
 
                     if not line or line <= 0:
+                        debug_counters['no_line'] += 1
                         continue
 
                     injury_status = p.get('injury_status', 'HEALTHY')
@@ -525,7 +544,17 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
                     # ⭐ FILTRAGE STRICT avec le scorer avancé
                     if not scorer.should_include_pick(score, edge, sample_size, injury_status):
+                        if injury_status and str(injury_status).upper() == 'OUT':
+                            debug_counters['out_status'] += 1
+                        elif edge < scorer.MIN_EDGE:
+                            debug_counters['low_edge'] += 1
+                        elif score < scorer.MIN_SCORE:
+                            debug_counters['low_score'] += 1
+                        elif sample_size < scorer.MIN_SAMPLE_SIZE:
+                            debug_counters['low_sample'] += 1
                         continue
+
+                    debug_counters['included'] += 1
 
                     base_pick = {
                         "player": p['full_name'],
@@ -554,250 +583,26 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
         best_bets.sort(key=lambda x: x['ev'], reverse=True)
         top_picks = best_bets[:15]
 
+        # Log debug pour comprendre les filtres (flush pour éviter le buffering)
+        debug_summary = (
+            f"DEBUG picks counters: {debug_counters} | "
+            f"checked={debug_counters['total_checked']} | "
+            f"no_projection={debug_counters['no_projection']} | "
+            f"no_line={debug_counters['no_line']} | "
+            f"low_edge={debug_counters['low_edge']} | "
+            f"low_score={debug_counters['low_score']} | "
+            f"low_sample={debug_counters['low_sample']} | "
+            f"out_status={debug_counters['out_status']} | "
+            f"included={debug_counters['included']} | "
+            f"potential={len(best_bets)}"
+        )
+        print(f"🧮 {debug_summary}", flush=True)
+
         ANALYSIS_JOBS[job_id] = {
             "status": "complete",
             "data": top_picks,
             "progress": 100,
-            "message": f"{len(top_picks)} picks ULTRA-SÉLECTIFS (sur {len(best_bets)} analysés)"
+            "message": f"{len(top_picks)} picks ULTRA-SÉLECTIFS (sur {len(best_bets)} analysés)",
+            "debug": debug_summary
         }
-        print(f"✅ Scan terminé : {len(top_picks)} picks sélectionnés (sur {len(best_bets)} potentiels).")
-
-
-
-@app.post("/analysis/start-scan")
-def start_best_bets_scan(scan_req: ScanRequest | None = Body(default=None), background_tasks: BackgroundTasks = None):
-    job_id = str(uuid.uuid4())
-    ANALYSIS_JOBS[job_id] = {"status": "running", "data": [], "progress": 0}
-    markets = scan_req.markets if scan_req else None
-    background_tasks.add_task(run_best_bets_scan, job_id, markets)
-    return {"job_id": job_id}
-
-
-@app.get("/analysis/scan-results/{job_id}")
-def get_scan_results(job_id: str):
-    return ANALYSIS_JOBS.get(job_id, {"status": "not_found"})
-
-
-@app.post("/analysis/build-parlay")
-def build_parlay(bets: List[Bet]):
-    if not bets: return {"safe_bet": None, "value_bet": None}
-    bets.sort(key=lambda x: (x.confidence, x.ev), reverse=True)
-    safe_bets = bets[:3]
-    safe_parlay = {"legs": [], "total_odds": 1.0, "type": "Sûreté"}
-    for bet in safe_bets:
-        safe_parlay["legs"].append(bet.dict())
-        safe_parlay["total_odds"] *= (bet.odds or 1.0)
-    bets.sort(key=lambda x: x.ev, reverse=True)
-    value_bets = bets[:2]
-    value_parlay = {"legs": [], "total_odds": 1.0, "type": "Value"}
-    for bet in value_bets:
-        value_parlay["legs"].append(bet.dict())
-        value_parlay["total_odds"] *= (bet.odds or 1.0)
-    return {"safe_bet": safe_parlay, "value_bet": value_parlay}
-
-
-@app.get("/health")
-def health(): return {"status": "ok"}
-
-
-@app.get("/analysis/list-jobs")
-def list_analysis_jobs():
-    """Retourne la liste des jobs persistés (job_id, status, nombre de picks)"""
-    out = []
-    for jid, obj in ANALYSIS_JOBS.items():
-        out.append({
-            "job_id": jid,
-            "status": obj.get("status"),
-            "count": len(obj.get("data", []))
-        })
-    # Trier par date de fichier si possible
-    try:
-        files = list(PERSIST_DIR.glob('*.json'))
-        files_sorted = sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)
-        # ajouter aussi les jobs qui sont sur disque mais pas encore dans ANALYSIS_JOBS
-        for f in files_sorted:
-            jid = f.stem
-            if jid in ANALYSIS_JOBS: continue
-            try:
-                with open(f, 'r') as fh:
-                    obj = json.load(fh)
-                    out.append({"job_id": jid, "status": obj.get('status'), "count": len(obj.get('data', []))})
-            except: pass
-    except Exception:
-        pass
-    return out
-
-
-@app.get("/analysis/latest-job")
-def get_latest_job():
-    """Retourne l'ID du dernier job persisté (ou 404 si aucun)."""
-    files = list(PERSIST_DIR.glob('*.json'))
-    if not files:
-        return {"job_id": None}
-    latest = max(files, key=lambda x: x.stat().st_mtime)
-    return {"job_id": latest.stem}
-
-
-@app.get("/analysis/best-bets")
-def get_best_bets():
-    """Retourne les picks du dernier job persisté (ou []) pour usage frontend rapide."""
-    # 1. Chercher le dernier job dans ANALYSIS_JOBS avec status complete
-    complete_jobs = [(jid, obj) for jid, obj in ANALYSIS_JOBS.items() if obj.get('status') == 'complete']
-    if complete_jobs:
-        # trier par présence dans PERSIST_DIR (mtime) ou retourner le premier
-        try:
-            files = {f.stem: f for f in PERSIST_DIR.glob('*.json')}
-            # choisir le job avec fichier le plus récent
-            best = None
-            latest_mtime = 0
-            for jid, obj in complete_jobs:
-                f = files.get(jid)
-                if f and f.stat().st_mtime > latest_mtime:
-                    latest_mtime = f.stat().st_mtime
-                    best = (jid, obj)
-            if best:
-                return best[1].get('data', [])
-        except Exception:
-            pass
-        # fallback: return the largest data list
-        best = max(complete_jobs, key=lambda x: len(x[1].get('data', [])))
-        return best[1].get('data', [])
-
-    # 2. Aucun job en mémoire, regarder sur disque
-    try:
-        files = list(PERSIST_DIR.glob('*.json'))
-        if not files:
-            return []
-        latest = max(files, key=lambda x: x.stat().st_mtime)
-        with open(latest, 'r') as fh:
-            obj = json.load(fh)
-            return obj.get('data', [])
-    except Exception:
-        return []
-
-
-@app.get("/games/week")
-def get_games_week(db: Session = Depends(get_db)):
-    """Retourne les matchs de la semaine (aujourd'hui -> +7 jours) sous forme de liste.
-    Format retourné attendu par le frontend : {"games": [ {"nba_game_id":..., "game_date": "YYYY-MM-DD", "game_time": "HH:MM", "home_team": "LAL", "away_team": "BOS", "arena": "..."}, ... ]}
-    """
-    today = datetime.now().date()
-    end = today + timedelta(days=7)
-    games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date >= today, models.GameSchedule.game_date <= end).all()
-
-    out = []
-    for g in games:
-        out.append({
-            "nba_game_id": g.nba_game_id,
-            "game_date": g.game_date.isoformat() if g.game_date else None,
-            "game_time": g.game_time,
-            "home_team": g.home_team_code,
-            "away_team": g.away_team_code,
-            "arena": g.arena,
-            "status": g.status
-        })
-    return {"games": out}
-
-
-@app.get("/games/{nba_game_id}/lineups")
-def get_game_lineups(nba_game_id: str, db: Session = Depends(get_db)):
-    """Retourne les lineups (home_roster, away_roster) pour un match donné en utilisant get_roster_for_team.
-    Le frontend attend un dict contenant home_team, away_team, home_roster, away_roster.
-    """
-    game = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id == nba_game_id).first()
-    if not game:
-        return {"error": "game_not_found"}
-
-    home_code = game.home_team_code
-    away_code = game.away_team_code
-
-    home_roster = get_roster_for_team(home_code, db)
-    away_roster = get_roster_for_team(away_code, db)
-
-    # Normaliser le format pour le frontend
-    def _normalize_roster(roster):
-        out = []
-        for p in roster:
-            out.append({
-                "id": p.get('id'),
-                "full_name": p.get('full_name'),
-                "position": p.get('position'),
-                "nba_player_id": p.get('nba_id') or p.get('nba_player_id'),
-                "injury_status": p.get('injury_status', 'HEALTHY')
-            })
-        return out
-
-    return {
-        "home_team": home_code,
-        "away_team": away_code,
-        "home_roster": _normalize_roster(home_roster),
-        "away_roster": _normalize_roster(away_roster)
-    }
-
-
-class IngestionRunDTO(BaseModel):
-    id: int
-    source: str
-    scope: Optional[str]
-    version_tag: Optional[str]
-    status: str
-    started_at: datetime
-    ended_at: Optional[datetime]
-    meta: Optional[str]
-
-    class Config:
-        orm_mode = True
-
-
-class OddsSnapshotDTO(BaseModel):
-    id: int
-    game_id: str
-    player_id: Optional[int]
-    market: str
-    line: Optional[float]
-    price_over: Optional[float]
-    price_under: Optional[float]
-    bookmaker: str
-    fetched_at: datetime
-    ttl_expire_at: Optional[datetime]
-
-    class Config:
-        orm_mode = True
-
-
-@app.get("/datahub/ingestion-runs", response_model=List[IngestionRunDTO])
-def list_ingestion_runs(source: Optional[str] = None, limit: int = 50, db: Session = Depends(get_db)):
-    q = db.query(models.IngestionRun).order_by(models.IngestionRun.started_at.desc())
-    if source:
-        q = q.filter(models.IngestionRun.source == source)
-    return q.limit(min(limit, 200)).all()
-
-
-@app.get("/datahub/odds-snapshots", response_model=List[OddsSnapshotDTO])
-def list_odds_snapshots(game_id: str = Query(...), bookmaker: Optional[str] = None, limit: int = 200, db: Session = Depends(get_db)):
-    q = db.query(models.OddsSnapshot).filter(models.OddsSnapshot.game_id == game_id).order_by(models.OddsSnapshot.fetched_at.desc())
-    if bookmaker:
-        q = q.filter(models.OddsSnapshot.bookmaker == bookmaker)
-    return q.limit(min(limit, 500)).all()
-
-
-@app.get("/analysis/odds-cache/{nba_game_id}")
-def get_odds_cache_for_game(nba_game_id: str, bookmaker: Optional[str] = None, db: Session = Depends(get_db)):
-    q = db.query(models.OddsSnapshot).filter(models.OddsSnapshot.game_id == nba_game_id)
-    if bookmaker:
-        q = q.filter(models.OddsSnapshot.bookmaker == bookmaker)
-    rows = q.order_by(models.OddsSnapshot.fetched_at.desc()).all()
-    out = []
-    for r in rows:
-        out.append({
-            "game_id": r.game_id,
-            "player_id": r.player_id,
-            "market": r.market,
-            "line": float(r.line) if r.line is not None else None,
-            "price_over": float(r.price_over) if r.price_over is not None else None,
-            "price_under": float(r.price_under) if r.price_under is not None else None,
-            "bookmaker": r.bookmaker,
-            "fetched_at": r.fetched_at,
-            "ttl_expire_at": r.ttl_expire_at
-        })
-    return {"odds": out}
+        print(f"✅ Scan terminé : {len(top_picks)} picks sélectionnés (sur {len(best_bets)} potentiels).", flush=True)

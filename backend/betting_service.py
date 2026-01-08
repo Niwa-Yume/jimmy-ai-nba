@@ -77,53 +77,53 @@ class BettingOddsProvider:
         """Récupère l'ID du match chez The-Odds-API en matching home/away (pas uniquement Bet365)."""
         if self.quota_exceeded or not self.api_key: return None
 
-        try:
-            params = {"apiKey": self.api_key, "regions": "us", "markets": "h2h"}
-            res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
+        regions_to_try = ["us", "us2", "ca", "uk", "eu"]
+        home_name = TEAM_MAPPING.get(home_team_code)
+        away_name = TEAM_MAPPING.get(away_team_code)
 
-            if res.status_code in [401, 429]:
-                print(f"🚨 ALERTE API : Quota dépassé ou clé invalide ({res.status_code}). Tentative de changement de clé.")
-                if self.switch_to_next_key():
-                    params["apiKey"] = self.api_key
-                    res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
-                    if res.status_code in [401, 429]:
+        def norm(s):
+            return (s or "").lower().strip()
+
+        for region in regions_to_try:
+            try:
+                params = {"apiKey": self.api_key, "regions": region, "markets": "h2h"}
+                res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
+
+                if res.status_code in [401, 429]:
+                    print(f"🚨 ALERTE API ({region}) : Quota dépassé ou clé invalide ({res.status_code}). Tentative de changement de clé.")
+                    if self.switch_to_next_key():
+                        params["apiKey"] = self.api_key
+                        res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
+                        if res.status_code in [401, 429]:
+                            self.quota_exceeded = True
+                            continue
+                    else:
                         self.quota_exceeded = True
-                        return None
-                else:
-                    self.quota_exceeded = True
-                    return None
+                        continue
 
-            if res.status_code != 200:
-                print(f"⚠️ Erreur HTTP API Odds : {res.status_code}")
-                return None
+                if res.status_code != 200:
+                    print(f"⚠️ Erreur HTTP API Odds ({region}) : {res.status_code}")
+                    continue
 
-            events = res.json()
-            home_name = TEAM_MAPPING.get(home_team_code)
-            away_name = TEAM_MAPPING.get(away_team_code)
-
-            def norm(s):
-                return (s or "").lower().strip()
-
-            for e in events:
-                h = norm(e.get("home_team"))
-                a = norm(e.get("away_team"))
-                if home_name and away_name:
-                    if norm(home_name) in h and norm(away_name) in a:
-                        return e["id"]
-                    if norm(home_name) in a and norm(away_name) in h:  # swapped safety
+                events = res.json() or []
+                for e in events:
+                    h = norm(e.get("home_team")); a = norm(e.get("away_team"))
+                    if home_name and away_name:
+                        if norm(home_name) in h and norm(away_name) in a:
+                            return e["id"]
+                        if norm(home_name) in a and norm(away_name) in h:
+                            return e["id"]
+                # Fallback partiel sur une seule équipe
+                for e in events:
+                    h = norm(e.get("home_team")); a = norm(e.get("away_team"))
+                    if (home_name and norm(home_name) in h) or (away_name and norm(away_name) in a):
                         return e["id"]
 
-            # Fallback : premier event qui contient l'une des équipes
-            for e in events:
-                h = norm(e.get("home_team")); a = norm(e.get("away_team"))
-                if (home_name and norm(home_name) in h) or (away_name and norm(away_name) in a):
-                    return e["id"]
+            except Exception as e:
+                print(f"❌ Exception API Events ({region}): {e}")
+                continue
 
-            print(f"⚠️ Match non trouvé sur The-Odds-API pour : {home_team_code} vs {away_team_code}")
-            return None
-
-        except Exception as e:
-            print(f"❌ Exception API Events: {e}")
+        print(f"⚠️ Match non trouvé sur The-Odds-API pour : {home_team_code} vs {away_team_code}")
         return None
 
     def _select_bookmaker(self, bookmakers: list):

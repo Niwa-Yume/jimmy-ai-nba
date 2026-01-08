@@ -25,6 +25,9 @@ services:
     env_file: .env
     volumes:
       - ./.env:/app/.env:ro
+      - ./backend:/app/backend
+      - ./data-pipeline:/app/data-pipeline
+      - ./check_data_health.py:/app/check_data_health.py
     depends_on:
       - db
     ports:
