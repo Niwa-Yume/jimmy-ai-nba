@@ -1,20 +1,21 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Tes infos de connexion (les mêmes que dans ton Docker)
-SQLALCHEMY_DATABASE_URL = "postgresql://jimmy_user:secure_password_123@localhost:5432/jimmy_nba_db"
+DB_USER = os.getenv("DB_USER", "jimmy_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password_123")
+DB_NAME = os.getenv("DB_NAME", "jimmy_nba_db")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
-# Création du moteur
+SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
-
-# La session pour faire les requêtes
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# La classe de base pour tes modèles
 Base = declarative_base()
 
-# Petite fonction utilitaire pour récupérer la BDD dans chaque route API
+
 def get_db():
     db = SessionLocal()
     try:

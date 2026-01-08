@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query, Body
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 import pandas as pd
 import os
 from backend.database import get_db, engine
@@ -405,9 +405,15 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
 # --- SYNC INJURIES HELPER ---
 def _run_sync_injuries():
     try:
-        script_path = Path(__file__).resolve().parent.parent / "data-pipeline" / "sync_injuries.py"
+        base_dir = Path(__file__).resolve().parent.parent
+        script_path = base_dir / "data-pipeline" / "sync_injuries.py"
         if not script_path.exists():
-            print("⚠️ sync_injuries.py introuvable, skip refresh blessures.")
+            # Essayer un autre chemin éventuel
+            alt_path = base_dir / "data" / "data-pipeline" / "sync_injuries.py"
+            if alt_path.exists():
+                script_path = alt_path
+        if not script_path.exists():
+            print("⚠️ sync_injuries.py introuvable (paths testés: data-pipeline/, data/data-pipeline/). Skip refresh blessures.")
             return
         subprocess.run(["python", str(script_path), "--quiet"], check=False, timeout=120)
     except Exception as e:
