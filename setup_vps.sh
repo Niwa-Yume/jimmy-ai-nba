@@ -16,11 +16,11 @@ ssh $VPS "cd jimmy-ai-nba && docker compose up -d"
 
 # 3. Peupler les joueurs
 echo "👥 3/5 - Peuplement des joueurs..."
-ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python /app/../data-pipeline/populate_players.py"
+ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python data-pipeline/populate_players.py"
 
 # 4. Sync des matchs
 echo "🏀 4/5 - Synchronisation des matchs..."
-ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python /app/../data-pipeline/sync_weekly_games_v2.py"
+ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python data-pipeline/sync_weekly_games_v2.py"
 
 # 5. Vérification
 echo "✅ 5/5 - Vérification..."
