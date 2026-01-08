@@ -46,7 +46,13 @@ class PlayerGameStats(Base):
     minutes_played = Column(Float)
     fg_percentage = Column(Float)
 
+    # ✅ Hash pour idempotence
+    content_hash = Column(String(64))
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
     player = relationship("Player", back_populates="stats")
+
+    __table_args__ = (UniqueConstraint('player_id', 'game_id', name='uq_player_game'),)
 
 
 # Nouvelle table : games_schedule

@@ -105,11 +105,24 @@ def sync_player_stats(nba_player_id, season='2024-25', limit=82):
             if not row:
                 print(f"   -> Insertion stats match {game_nba_id}: {g['PTS']} pts, {g['MATCHUP']}")
 
-                # INSERT with content_hash and timestamps
+                # INSERT with ON CONFLICT to handle duplicates
                 cur.execute("""
                             INSERT INTO player_game_stats
                             (player_id, game_id, points, rebounds, assists, steals, blocks, three_points_made, matchup, minutes_played, fg_percentage, content_hash, updated_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                            ON CONFLICT (player_id, game_id) 
+                            DO UPDATE SET
+                                points = EXCLUDED.points,
+                                rebounds = EXCLUDED.rebounds,
+                                assists = EXCLUDED.assists,
+                                steals = EXCLUDED.steals,
+                                blocks = EXCLUDED.blocks,
+                                three_points_made = EXCLUDED.three_points_made,
+                                matchup = EXCLUDED.matchup,
+                                minutes_played = EXCLUDED.minutes_played,
+                                fg_percentage = EXCLUDED.fg_percentage,
+                                content_hash = EXCLUDED.content_hash,
+                                updated_at = CURRENT_TIMESTAMP
                             """, (
                                 player_internal_id,
                                 game_internal_id,
