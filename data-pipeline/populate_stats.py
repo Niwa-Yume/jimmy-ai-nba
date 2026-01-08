@@ -1,15 +1,16 @@
 import psycopg2
+import os
 from nba_api.stats.endpoints import playergamelog
 import hashlib
 import json
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (compatibilité Docker + local) ---
 DB_PARAMS = {
-    "dbname": "jimmy_nba_db",
-    "user": "jimmy_user",
-    "password": "secure_password_123",
-    "host": "localhost",
-    "port": "5432"
+    "dbname": os.getenv("DB_NAME", "jimmy_nba_db"),
+    "user": os.getenv("DB_USER", "jimmy_user"),
+    "password": os.getenv("DB_PASSWORD", "secure_password_123"),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": os.getenv("DB_PORT", "5432")
 }
 
 def start_ingestion_run(cur, source: str, scope: str = None, version_tag: str = None):
