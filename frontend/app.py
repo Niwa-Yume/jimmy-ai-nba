@@ -624,7 +624,8 @@ def page_best_bets():
             st.session_state.best_bets = bets_with_odds
             st.session_state.projection_only_bets = bets_projection_only
             st.session_state.scan_job_id = None
-            safe_rerun()
+            st.success(f"✅ {len(bets_with_odds)} opportunités trouvées !")
+            safe_rerun()  # Rafraîchir automatiquement pour afficher les résultats
         else:
             # pas de résultat final après polling : garder le job_id pour refresh manuel
             status_text.warning("Le scan est toujours en cours ou n'a pas renvoyé de résultat final dans le temps imparti. Appuyez sur '🔁 Rafraîchir l'état' si nécessaire.")

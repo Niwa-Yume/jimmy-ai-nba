@@ -509,7 +509,8 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         injury_factor *= max(0.0, min(1.0, float(play_prob) / 100.0))
                     score *= injury_factor
 
-                    if score < 60 or not line:
+                    # Seuil réduit : 45 au lieu de 60 pour avoir plus de picks
+                    if score < 45 or not line:
                         continue
 
                     base_pick = {"player": p['full_name'], "team": game.home_team_code if p in home_roster else game.away_team_code,

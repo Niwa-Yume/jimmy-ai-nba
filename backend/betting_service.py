@@ -144,11 +144,11 @@ class BettingOddsProvider:
         """
         Met à jour les cotes en BDD si elles sont vieilles ou absentes.
         """
-        # 1. Check BDD (Cache 4h)
-        recent = datetime.now() - timedelta(hours=4)
-        existing = db.query(models.BettingOdds).filter(
-            models.BettingOdds.game_id == nba_game_id,
-            models.BettingOdds.updated_at > recent
+        # 1. Check BDD (Cache 1h) - UTILISE OddsSnapshot maintenant
+        recent = datetime.now() - timedelta(hours=1)
+        existing = db.query(models.OddsSnapshot).filter(
+            models.OddsSnapshot.game_id == nba_game_id,
+            models.OddsSnapshot.fetched_at > recent
         ).first()
 
         if existing:
@@ -200,8 +200,8 @@ class BettingOddsProvider:
                 return False
             print(f"   ✅ Source des cotes : {bookie['title']}")
 
-            # Suppression anciens records pour ce match
-            db.query(models.BettingOdds).filter(models.BettingOdds.game_id == nba_game_id).delete()
+            # Suppression anciens records pour ce match (utilise OddsSnapshot)
+            db.query(models.OddsSnapshot).filter(models.OddsSnapshot.game_id == nba_game_id).delete()
 
             new_odds = []
             # On précharge tous les joueurs pour éviter les requêtes SQL en boucle
@@ -226,15 +226,18 @@ class BettingOddsProvider:
 
                     if not matched_id: continue
 
+                    # Créer un OddsSnapshot (pas BettingOdds)
                     if outcome["name"] == "Over":
-                        obj = models.BettingOdds(
+                        obj = models.OddsSnapshot(
                             game_id=nba_game_id,
                             player_id=matched_id,
                             market=m_type,
                             line=line,
-                            odds_over=outcome["price"],
-                            odds_under=1.85,  # Valeur par défaut
-                            bookmaker=bookie["title"]
+                            price_over=outcome["price"],
+                            price_under=1.85,  # Valeur par défaut
+                            bookmaker=bookie["title"],
+                            fetched_at=datetime.now(),
+                            ttl_expire_at=datetime.now() + timedelta(hours=4)
                         )
                         new_odds.append(obj)
 
@@ -252,12 +255,25 @@ class BettingOddsProvider:
             return False
 
     def get_odds_from_db(self, db: Session, player_id: int, game_id: str, market: str):
-        """Lecture rapide depuis la BDD."""
-        return db.query(models.BettingOdds).filter(
-            models.BettingOdds.player_id == player_id,
-            models.BettingOdds.game_id == game_id,
-            models.BettingOdds.market == market
+        """Lecture rapide depuis la BDD (utilise OddsSnapshot)."""
+        snap = db.query(models.OddsSnapshot).filter(
+            models.OddsSnapshot.player_id == player_id,
+            models.OddsSnapshot.game_id == game_id,
+            models.OddsSnapshot.market == market
         ).first()
+
+        if not snap:
+            return None
+
+        # Convertir en format BettingOdds pour compatibilité
+        class OddsCompat:
+            def __init__(self, snap):
+                self.line = snap.line
+                self.odds_over = snap.price_over
+                self.odds_under = snap.price_under
+                self.bookmaker = snap.bookmaker
+
+        return OddsCompat(snap)
 
     def _has_fresh_snapshots(self, db: Session, game_id: str, ttl_hours: int = 4):
         cutoff = datetime.utcnow() - timedelta(hours=ttl_hours)
