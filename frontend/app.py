@@ -427,7 +427,7 @@ def page_player_detail():
             pace = stat.get('pace_factor', 1.0)
             if pace > 1.02: factors_html += '<span class="impact-badge badge-blue">⚡️ Rythme Rapide</span>'
             elif pace < 0.98: factors_html += '<span class="impact-badge badge-red">🐢 Rythme Lent</span>'
-            
+
             defense = stat.get('defensive_factor', 1.0)
             if defense > 1.05: factors_html += '<span class="impact-badge badge-green">🟢 Défense Perméable</span>'
             elif defense < 0.95: factors_html += '<span class="impact-badge badge-red">🛡️ Défense Elite</span>'
@@ -651,25 +651,25 @@ def page_best_bets():
         b['score'] = float(b.get('ev') or 0.0)
         b['risk_flag'] = 'INJ' if b['injury_status'] and b['injury_status'] not in ['HEALTHY', 'ACTIVE'] else ''
         b['confidence_flag'] = 'HIGH' if b['score'] >= 75 else ('MED' if b['score'] >= 60 else 'LOW')
+        if b.get('projection') is not None and b.get('line') is not None:
+            b['margin'] = round(float(b['projection']) - float(b['line']), 1)
+        else:
+            b['margin'] = None
     bets = sorted(bets, key=lambda x: x.get('score', 0), reverse=True)
 
-    st.markdown(f"#### 🎯 Opportunités détectées : {len(bets)}")
+    # Filtres simplifiés : on affiche tel quel
+    filtered_bets = bets
+
+    st.markdown(f"#### 🎯 Sélections disponibles : {len(filtered_bets)}")
 
     # Limiter l'affichage à 15 cartes pour simplicité; bouton pour tout voir
-    show_all = st.checkbox("Afficher tous les picks", value=False)
-    bets_to_show = bets if show_all else bets[:15]
+    show_all = st.checkbox("Afficher toutes les sélections", value=False)
+    bets_to_show = filtered_bets if show_all else filtered_bets[:15]
 
     if 'selected_bets_ids' not in st.session_state:
         st.session_state.selected_bets_ids = set()
 
     col_sel_left, col_sel_right = st.columns([1, 3])
-    with col_sel_left:
-        if st.button("Tout sélectionner"):
-            st.session_state.selected_bets_ids = {f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" for b in bets_to_show}
-            safe_rerun()
-        if st.button("Tout désélectionner"):
-            st.session_state.selected_bets_ids = set()
-            safe_rerun()
     with col_sel_right:
         st.write("Sélectionnez les paris à inclure (top 15 par défaut).")
 
@@ -677,24 +677,26 @@ def page_best_bets():
         bet_key = f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}"
         checked = bet_key in st.session_state.selected_bets_ids
         with st.container():
-            cols = st.columns([0.1, 0.6, 0.3])
+            cols = st.columns([0.1, 0.55, 0.35])
             with cols[0]:
-                new_val = st.checkbox("Sélection", value=checked, key=f"chk_{bet_key}", label_visibility="collapsed")
+                new_val = st.checkbox("Ajouter", value=checked, key=f"chk_{bet_key}", label_visibility="collapsed")
                 if new_val:
                     st.session_state.selected_bets_ids.add(bet_key)
                 else:
                     st.session_state.selected_bets_ids.discard(bet_key)
             with cols[1]:
-                st.markdown(f"**{b.get('player')}** — {b.get('market').upper()} {b.get('line')} @ {b.get('odds')} (src: {b.get('odds_source') or 'n/a'})")
-                st.markdown(f"Proj: {b.get('projection')} | Conf: {b.get('confidence')} | Score: {b.get('score'):.0f}")
+                st.markdown(f"**{b.get('player')}** • {b.get('team')} vs {b.get('opponent')}")
+                st.markdown(f"{b.get('market').upper()} — Ligne {b.get('line')} @ {b.get('odds')} • Type {b.get('bet_type')} • Source {b.get('odds_source') or 'n/a'}")
+                st.markdown(f"Score modèle: {b.get('score'):.0f} | Marge modèle: {b.get('margin'):+.1f} | Projection: {b.get('projection')}")
                 if b.get('risk_flag'):
                     st.markdown(f"🚑 Statut blessure: {b.get('injury_status')}")
             with cols[2]:
-                st.markdown(f"EV / Score: **{b.get('score'):.0f}**")
-                st.markdown(f"{b.get('team')} vs {b.get('opponent')}")
-                st.markdown(f"Type: {b.get('bet_type')}")
+                st.markdown(f"Valeur attendue: **{b.get('score'):.0f}**")
+                if b.get('margin') is not None:
+                    st.markdown(f"Marge vs ligne: **{b.get('margin'):+.1f}**")
+                st.markdown(f"Marché: {b.get('market').upper()}")
 
-    selected_bets = [b for b in bets if f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" in st.session_state.selected_bets_ids]
+    selected_bets = [b for b in filtered_bets if f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" in st.session_state.selected_bets_ids]
 
     st.markdown("### 🧮 Votre ticket")
     if selected_bets:
