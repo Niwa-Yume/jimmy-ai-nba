@@ -110,7 +110,6 @@ def sync_player_stats(nba_player_id, season='2024-25', limit=82):
                             INSERT INTO player_game_stats
                             (player_id, game_id, points, rebounds, assists, steals, blocks, three_points_made, matchup, minutes_played, fg_percentage, content_hash, updated_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (player_id, game_id) DO NOTHING;
                             """, (
                                 player_internal_id,
                                 game_internal_id,

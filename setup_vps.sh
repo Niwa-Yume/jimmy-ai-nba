@@ -1,35 +1,27 @@
 #!/bin/bash
 set -e
-
 echo "🚀 Setup Jimmy AI sur VPS"
 echo "========================="
-
 VPS="juju@192.168.1.134"
-
 # 1. Copier le .env
-echo "📦 1/5 - Copie du .env..."
+echo "📦 1/6 - Copie du .env..."
 scp .env $VPS:/home/juju/jimmy-ai-nba/.env
-
-# 2. S'assurer que docker compose est up
-echo "🐳 2/5 - Démarrage des conteneurs..."
+# 2. Reconstruire avec data-pipeline
+echo "🏗️  2/6 - Rebuild du backend avec data-pipeline..."
+ssh $VPS "cd jimmy-ai-nba && docker compose build backend"
+# 3. Redémarrer les conteneurs
+echo "🐳 3/6 - Redémarrage des conteneurs..."
 ssh $VPS "cd jimmy-ai-nba && docker compose up -d"
-
-# 3. Peupler les joueurs
-echo "👥 3/5 - Peuplement des joueurs..."
-ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python data-pipeline/populate_players.py"
-
-# 4. Sync des matchs
-echo "🏀 4/5 - Synchronisation des matchs..."
-ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python data-pipeline/sync_weekly_games_v2.py"
-
-# 5. Vérification
-echo "✅ 5/5 - Vérification..."
+# 4. Peupler les joueurs
+echo "👥 4/6 - Peuplement des joueurs..."
+ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python /app/data-pipeline/populate_players.py"
+# 5. Sync des matchs
+echo "🏀 5/6 - Synchronisation des matchs..."
+ssh $VPS "cd jimmy-ai-nba && docker compose exec -T backend python /app/data-pipeline/sync_weekly_games_v2.py"
+# 6. Vérification
+echo "✅ 6/6 - Vérification..."
 ssh $VPS "cd jimmy-ai-nba && docker compose ps"
-ssh $VPS "curl -s http://localhost:8000/health"
-ssh $VPS "curl -s http://localhost:8501" | head -20
-
 echo ""
-echo "✅ SETUP TERMINÉ !"
-echo "📍 Frontend: http://192.168.1.134:8501"
-echo "📍 Backend: http://192.168.1.134:8000"
-
+echo "✅ SETUP TERMINÉ!"
+echo "📱 Frontend : https://jimmyainba.duckdns.org"
+echo "🔌 Backend  : https://jimmyainba.duckdns.org/health"
