@@ -459,6 +459,9 @@ def _run_sync_injuries():
 
 # --- MAIN SCAN LOOP ---
 
+# Limite de picks renvoyés au frontend (augmentée pour afficher plus que 10)
+TOP_PICKS_LIMIT = 50
+
 def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
     _run_sync_injuries()
@@ -615,9 +618,9 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
                     best_bets.append(base_pick)
 
-        # Trier par score (EV) décroissant et limiter à 15 meilleurs picks ULTRA-SÉLECTIFS
+        # Trier par score (EV) décroissant et limiter aux meilleurs picks
         best_bets.sort(key=lambda x: x['ev'], reverse=True)
-        top_picks = best_bets[:15]
+        top_picks = best_bets[:TOP_PICKS_LIMIT]
 
         # Log debug pour comprendre les filtres (flush pour éviter le buffering)
         debug_summary = (
