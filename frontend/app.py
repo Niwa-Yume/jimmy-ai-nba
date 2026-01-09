@@ -532,11 +532,10 @@ def page_best_bets():
     markets_map = {
         "Points": "points",
         "Rebonds": "rebounds",
-        "Passes": "assists",
-        "3-Points": "three_points_made"
+        "Passes": "assists"
     }
     st.markdown("### Paramètres du Scan")
-    selected_display = st.multiselect("Marchés à analyser", list(markets_map.keys()), default=["3-Points", "Points", "Passes", "Rebonds"])
+    selected_display = st.multiselect("Marchés à analyser", list(markets_map.keys()), default=["Points", "Passes", "Rebonds"])
     # Enregistrer la sélection des marchés dans la session pour usage après le scan
     st.session_state.selected_display = selected_display
 
@@ -635,8 +634,8 @@ def page_best_bets():
 
     bets_all = st.session_state.get("best_bets", [])
     # Determine selected markets (map display names to internal keys)
-    selected_display = st.session_state.get('selected_display', ["3-Points", "Points", "Passes", "Rebonds"])
-    display_to_key = {"Points": "points", "Rebonds": "rebounds", "Passes": "assists", "3-Points": "three_points_made"}
+    selected_display = st.session_state.get('selected_display', ["Points", "Passes", "Rebonds"])
+    display_to_key = {"Points": "points", "Rebonds": "rebounds", "Passes": "assists"}
     selected_markets = [display_to_key.get(d) for d in selected_display if d in display_to_key]
     # Filter bets to only include selected markets
     if selected_markets:
@@ -657,14 +656,14 @@ def page_best_bets():
             b['margin'] = None
     bets = sorted(bets, key=lambda x: x.get('score', 0), reverse=True)
 
-    # Filtres simplifiés : on affiche tel quel
     filtered_bets = bets
 
     st.markdown(f"#### 🎯 Sélections disponibles : {len(filtered_bets)}")
 
-    # Limiter l'affichage à 15 cartes pour simplicité; bouton pour tout voir
+    # Limiter l'affichage par défaut à 15, mais autoriser jusqu'à 50 si présent
     show_all = st.checkbox("Afficher toutes les sélections", value=False)
-    bets_to_show = filtered_bets if show_all else filtered_bets[:15]
+    max_show = 50 if show_all else 15
+    bets_to_show = filtered_bets[:max_show]
 
     if 'selected_bets_ids' not in st.session_state:
         st.session_state.selected_bets_ids = set()

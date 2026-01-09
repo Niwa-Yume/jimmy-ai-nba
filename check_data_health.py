@@ -76,6 +76,17 @@ def check_health():
         print(f"   - Dernière récupération : {last_odds_fetch}")
         print(f"   - Prochain TTL expirant : {next_expire}")
 
+        cur.execute("""
+            SELECT market, COUNT(*) AS cnt, MAX(fetched_at) AS last_fetch
+            FROM odds_snapshots
+            GROUP BY market
+            ORDER BY cnt DESC
+        """)
+        market_rows = cur.fetchall()
+        print("   - Détail par marché :")
+        for m, cnt, last in market_rows:
+            print(f"     * {m}: {cnt} lignes (dernière récupération: {last})")
+
         print("\n-------------------------------------")
         
         # Alerte si données vieilles

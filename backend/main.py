@@ -368,10 +368,14 @@ def calculate_stat_projection(df, stat_column, player_name, team_code, opponent_
 def compute_projection(player_id: int, games: int = 82, game_id: str = None, db: Session = Depends(get_db),
                        odds_event_id: str = None):
     player = db.query(models.Player).filter(models.Player.id == player_id).first()
-    if not player: return {}
+    if not player:
+        print(f"   ⚠️ compute_projection: player_id={player_id} introuvable")
+        return {}
 
     query = f"SELECT * FROM player_game_stats WHERE player_id = {player_id} ORDER BY game_id DESC LIMIT {games}"
     df = pd.read_sql(query, engine)
+
+    print(f"   🔍 Stats pour {player.full_name} (id={player_id}): {len(df)} matchs trouvés")
 
     # TTL pour éviter les re-fetch API si déjà rafraîchi récemment
     if df.empty:
@@ -409,10 +413,30 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
         except Exception as e:
             return {}
 
-    if df.empty: return {}
+    if df.empty:
+        print(f"   ⚠️ Aucune stat pour {player.full_name} (nba_player_id={player.nba_player_id}), tentative refresh...")
+        if not player.nba_player_id or player.nba_player_id == 0:
+            return {}
+        try:
+            sys_path_added = False
+            import sys
+            if 'data-pipeline' not in sys.path:
+                sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data-pipeline'))
+                sys_path_added = True
+
+            from populate_stats import sync_player_stats
+            time.sleep(0.4)  # Throttling léger
+            sync_player_stats(player.nba_player_id, limit=games)
+            df = pd.read_sql(query, engine)
+        except Exception as e:
+            return {}
+
+    if df.empty:
+        print(f"   ❌ TOUJOURS vide après refresh pour {player.full_name}")
+        return {}
 
     projections = {}
-    stats_list = ["points", "rebounds", "assists", "three_points_made"]
+    stats_list = ["points", "rebounds", "assists"]
 
     game = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id == game_id).first()
     team_code = game.home_team_code if game else "N/A"
@@ -431,6 +455,7 @@ def compute_projection(player_id: int, games: int = 82, game_id: str = None, db:
         )
         if proj: projections[stat] = proj
 
+    print(f"   ✅ Projections calculées pour {player.full_name}: {list(projections.keys())}")
     return {
         "player": player.full_name,
         "opponent": "OPP",
@@ -464,13 +489,19 @@ TOP_PICKS_LIMIT = 50
 
 def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
+
+    # Afficher l'état du quota API
+    if betting_provider.api_keys:
+        print(f"🔑 The-Odds-API: {len(betting_provider.api_keys)} clé(s) disponible(s)")
+        print(f"   📡 Clé active: {betting_provider.api_key[:6]}*** ({betting_provider.current_key_index + 1}/{len(betting_provider.api_keys)})")
+    else:
+        print(f"🚨 AUCUNE CLÉ The-Odds-API DISPONIBLE - Configurez THE_ODDS_API_KEY dans .env")
+
     _run_sync_injuries()
     with Session(engine) as db:
-        # Initialiser le scorer avancé
         scorer = AdvancedScorer(db)
 
         now = datetime.utcnow()
-        # Prioriser les matchs pour lesquels on a des snapshots d'odds non expirés
         odds_games = [g[0] for g in db.query(models.OddsSnapshot.game_id)
                       .filter((models.OddsSnapshot.ttl_expire_at.is_(None)) | (models.OddsSnapshot.ttl_expire_at > now))
                       .distinct().all()]
@@ -487,6 +518,15 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
         best_bets = []
         total_games = len(all_games)
 
+        # Markets supportés (three_points_made retiré car l'API The-Odds ne le supporte pas)
+        SUPPORTED_MARKETS = ["points", "rebounds", "assists"]
+        markets_to_scan = [m for m in (markets or SUPPORTED_MARKETS) if m in SUPPORTED_MARKETS]
+
+        if not markets_to_scan:
+            markets_to_scan = SUPPORTED_MARKETS
+
+        print(f"📊 Markets à analyser : {markets_to_scan}")
+
         # Compteurs debug pour analyser le filtrage
         debug_counters = {
             'total_checked': 0,
@@ -498,31 +538,64 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
             'out_status': 0,
             'included': 0
         }
+        # Comptes par marché / raison pour debug fin
+        reason_by_market = {
+            'no_projection': {},
+            'no_line': {},
+            'low_edge': {},
+            'low_score': {},
+            'low_sample': {},
+            'out_status': {}
+        }
+
+        # Pour analyser la distribution des edges
+        edge_samples = []
+
+        def _inc(reason_dict, market):
+            if market is None:
+                return
+            reason_dict[market] = reason_dict.get(market, 0) + 1
 
         # Check quota au début
         if betting_provider.quota_exceeded:
             print("🛑 SCAN ARRÊTÉ : Quota API Odds dépassé. Les cotes ne seront pas mises à jour.")
+            print("   💡 Solution : Ajouter une nouvelle clé API dans THE_ODDS_API_KEY (séparées par des virgules).")
+            print("   📖 Documentation : https://the-odds-api.com/")
+            ANALYSIS_JOBS[job_id] = {
+                "status": "complete",
+                "data": [],
+                "progress": 100,
+                "message": "⚠️ Quota API dépassé. Impossible de récupérer les cotes. Ajoutez une clé API dans .env (THE_ODDS_API_KEY).",
+                "error": "QUOTA_EXCEEDED"
+            }
+            return
 
         for i, game in enumerate(all_games):
             ANALYSIS_JOBS[job_id] = {"status": "running", "data": best_bets, "progress": int((i / total_games) * 100)}
             print(f"🔍 Analyse match {game.away_team_code} @ {game.home_team_code}...")
 
-            has_odds = betting_provider.update_odds_for_game(db, game.nba_game_id, game.home_team_code, game.away_team_code)
-            if not has_odds and betting_provider.quota_exceeded:
-                print("   ⚠️ Pas de mise à jour des cotes (Quota). Utilisation du cache existant si dispo.")
-
+            # Récupérer/attacher les rosters AVANT de récupérer les cotes pour que les player_id existent
             home_roster = get_roster_for_team(game.home_team_code, db)
             away_roster = get_roster_for_team(game.away_team_code, db)
             all_players = home_roster + away_roster
+
+            # Forcer un fetch fresh (TTL=0) pour éviter les caches vides/obsolètes
+            betting_provider.fetch_odds_snapshots_for_game(db, game.nba_game_id, game.home_team_code, game.away_team_code, ttl_hours=0)
+            # Log rapide du nombre de lignes par marché pour ce match
+            market_counts = db.query(models.OddsSnapshot.market, func.count(models.OddsSnapshot.id)).filter(models.OddsSnapshot.game_id == game.nba_game_id).group_by(models.OddsSnapshot.market).all()
+            print(f"   🧾 Snapshots {game.nba_game_id}: {market_counts}")
 
             if not all_players:
                 print("   ⚠️ Aucun joueur récupéré (roster vide).")
                 continue
 
             print(f"   📊 Joueurs : {len(all_players)}")
+            print(f"   🔍 DEBUG: Premier joueur = {all_players[0] if all_players else 'AUCUN'}")
 
             for p in all_players:
-                if not p.get('id'): continue
+                if not p.get('id'):
+                    print(f"      ⚠️ Joueur sans ID: {p.get('full_name')} (nba_id={p.get('nba_id')})")
+                    continue
 
                 # Déterminer l'équipe adverse
                 is_home = p in home_roster
@@ -530,19 +603,22 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
                 try:
                     proj_data = compute_projection(p['id'], games=82, game_id=game.nba_game_id, db=db)
-                except Exception:
+                except Exception as e:
+                    print(f"      ❌ Crash compute_projection pour {p.get('full_name')}: {e}")
                     continue
                 if not proj_data or "projections" not in proj_data:
                     debug_counters['no_projection'] += 1
+                    # pas de marché à incrémenter ici (pas de stat évaluée)
                     continue
 
                 # Récupérer le nombre de matchs pour la taille de l'échantillon
                 sample_size = proj_data.get('sample_size') or len(proj_data.get('last_games', []))
 
-                for stat in (markets or ["points", "rebounds", "assists"]):
+                for stat in markets_to_scan:
                     data = proj_data["projections"].get(stat)
                     if not data:
                         debug_counters['no_projection'] += 1
+                        _inc(reason_by_market['no_projection'], stat)
                         continue
 
                     debug_counters['total_checked'] += 1
@@ -562,6 +638,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
                     if not line or line <= 0:
                         debug_counters['no_line'] += 1
+                        _inc(reason_by_market['no_line'], stat)
                         continue
 
                     injury_status = p.get('injury_status', 'HEALTHY')
@@ -581,16 +658,27 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                     # Calculer l'edge pour l'affichage
                     edge = abs(proj - line) / line * 100 if line > 0 else 0
 
+                    # Collecter des exemples pour analyse (limité à 20)
+                    if len(edge_samples) < 20:
+                        edge_samples.append({
+                            'player': p['full_name'],
+                            'stat': stat,
+                            'proj': round(proj, 1),
+                            'line': round(line, 1),
+                            'edge': round(edge, 2),
+                            'score': round(score, 1)
+                        })
+
                     # ⭐ FILTRAGE STRICT avec le scorer avancé
                     if not scorer.should_include_pick(score, edge, sample_size, injury_status):
                         if injury_status and str(injury_status).upper() == 'OUT':
-                            debug_counters['out_status'] += 1
+                            debug_counters['out_status'] += 1; _inc(reason_by_market['out_status'], stat)
                         elif edge < scorer.MIN_EDGE:
-                            debug_counters['low_edge'] += 1
+                            debug_counters['low_edge'] += 1; _inc(reason_by_market['low_edge'], stat)
                         elif score < scorer.MIN_SCORE:
-                            debug_counters['low_score'] += 1
+                            debug_counters['low_score'] += 1; _inc(reason_by_market['low_score'], stat)
                         elif sample_size < scorer.MIN_SAMPLE_SIZE:
-                            debug_counters['low_sample'] += 1
+                            debug_counters['low_sample'] += 1; _inc(reason_by_market['low_sample'], stat)
                         continue
 
                     debug_counters['included'] += 1
@@ -613,7 +701,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         "play_probability": play_prob,
                         "edge": round(edge, 1),
                         "sample_size": sample_size,
-                        "scoring_details": details  # Détails du scoring pour debug
+                        "scoring_details": details
                     }
 
                     best_bets.append(base_pick)
@@ -623,16 +711,22 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
         top_picks = best_bets[:TOP_PICKS_LIMIT]
 
         # Log debug pour comprendre les filtres (flush pour éviter le buffering)
+        print(f"📊 Exemples d'edges calculés (20 premiers):", flush=True)
+        for sample in edge_samples[:10]:
+            print(f"   {sample['player'][:20]:20} {sample['stat']:8} | proj={sample['proj']:5.1f} line={sample['line']:5.1f} edge={sample['edge']:5.2f}% score={sample['score']:5.1f}", flush=True)
+
         debug_summary = (
             f"DEBUG picks counters: {debug_counters} | "
-            f"checked={debug_counters['total_checked']} | "
-            f"no_projection={debug_counters['no_projection']} | "
-            f"no_line={debug_counters['no_line']} | "
-            f"low_edge={debug_counters['low_edge']} | "
-            f"low_score={debug_counters['low_score']} | "
-            f"low_sample={debug_counters['low_sample']} | "
-            f"out_status={debug_counters['out_status']} | "
-            f"included={debug_counters['included']} | "
+            f"by_market_no_projection={reason_by_market['no_projection']} | "
+            f"by_market_no_line={reason_by_market['no_line']} | "
+            f"by_market_low_edge={reason_by_market['low_edge']} | "
+            f"by_market_low_score={reason_by_market['low_score']} | "
+            f"by_market_low_sample={reason_by_market['low_sample']} | "
+            f"by_market_out={reason_by_market['out_status']} | "
+            f"checked={debug_counters['total_checked']} | no_projection={debug_counters['no_projection']} | "
+            f"no_line={debug_counters['no_line']} | low_edge={debug_counters['low_edge']} | "
+            f"low_score={debug_counters['low_score']} | low_sample={debug_counters['low_sample']} | "
+            f"out_status={debug_counters['out_status']} | included={debug_counters['included']} | "
             f"potential={len(best_bets)}"
         )
         print(f"🧮 {debug_summary}", flush=True)

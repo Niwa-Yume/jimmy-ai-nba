@@ -20,10 +20,10 @@ class AdvancedScorer:
     """
 
     # Seuils de filtrage équilibrés pour picks de qualité
-    MIN_SCORE = 50  # Score minimum requis (50/100) - Équilibré
-    MIN_EDGE = 1.5  # Edge minimum en % (1.5% min) - Réaliste pour NBA (bookmakers très précis)
-    MIN_SAMPLE_SIZE = 8  # Nombre min de matchs pour projection fiable
-    MAX_PICKS = 25  # Maximum de picks à retourner
+    MIN_SCORE = 45  # Score minimum requis (45/100) - Baissé pour avoir plus de picks
+    MIN_EDGE = 0.1  # Edge minimum en % (0.1% min) - Quasi désactivé, on se base sur le score
+    MIN_SAMPLE_SIZE = 5  # Nombre min de matchs pour projection fiable (5 matchs minimum)
+    MAX_PICKS = 50  # Maximum de picks à retourner
 
     # Poids des différents facteurs dans le score
     WEIGHTS = {
@@ -152,7 +152,6 @@ class AdvancedScorer:
                 'points': 'points',
                 'rebounds': 'rebounds',
                 'assists': 'assists',
-                'threes': 'three_points_made',
                 'blocks': 'blocks',
                 'steals': 'steals'
             }
