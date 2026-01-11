@@ -133,7 +133,152 @@ st.markdown("""
     .val-high { color: #16a34a !important; } 
     .val-low { color: #dc2626 !important; }
     
-    /* --- 5. TICKET DE JEU PREMIUM --- */
+    /* --- 5. CARTES PARIS SIMPLIFIÉES --- */
+    .bet-card-simple {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 16px;
+        border: 2px solid #e2e8f0;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        transition: all 0.2s ease;
+    }
+    .bet-card-simple:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 16px rgba(59, 130, 246, 0.15);
+        border-color: #3b82f6;
+    }
+    .dark .bet-card-simple {
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        border-color: #334155;
+    }
+
+    .bet-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #e2e8f0;
+    }
+    .dark .bet-card-header { border-bottom-color: #334155; }
+
+    .bet-player-name {
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: #0f172a;
+        margin: 0;
+    }
+    .dark .bet-player-name { color: #f1f5f9; }
+
+    .bet-confidence-badge {
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .confidence-high {
+        background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+        color: white;
+    }
+    .confidence-med {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        color: white;
+    }
+    .confidence-low {
+        background: linear-gradient(135deg, #64748b 0%, #475569 100%);
+        color: white;
+    }
+
+    .bet-match-info {
+        font-size: 1rem;
+        color: #64748b;
+        margin-bottom: 16px;
+        font-weight: 600;
+    }
+    .dark .bet-match-info { color: #94a3b8; }
+
+    .bet-prediction-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .bet-stat-box {
+        background: #f8fafc;
+        border-radius: 10px;
+        padding: 12px;
+        text-align: center;
+        border: 1px solid #e2e8f0;
+    }
+    .dark .bet-stat-box {
+        background: #0f172a;
+        border-color: #1e293b;
+    }
+
+    .bet-stat-label {
+        font-size: 0.75rem;
+        color: #64748b;
+        text-transform: uppercase;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+    .dark .bet-stat-label { color: #94a3b8; }
+
+    .bet-stat-value {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #0f172a;
+    }
+    .dark .bet-stat-value { color: #f1f5f9; }
+
+    .bet-stat-value-highlight {
+        color: #3b82f6;
+    }
+
+    .bet-stat-value-success {
+        color: #22c55e;
+    }
+
+    .bet-explanation {
+        background: #eff6ff;
+        border-left: 4px solid #3b82f6;
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        color: #1e40af;
+        margin-bottom: 12px;
+        font-weight: 500;
+    }
+    .dark .bet-explanation {
+        background: rgba(59, 130, 246, 0.1);
+        color: #93c5fd;
+    }
+
+    .bet-bookmaker-info {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: 12px;
+        border-top: 1px solid #e2e8f0;
+        font-size: 0.9rem;
+        color: #64748b;
+    }
+    .dark .bet-bookmaker-info {
+        border-top-color: #334155;
+        color: #94a3b8;
+    }
+
+    .bookmaker-name {
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .dark .bookmaker-name { color: #f1f5f9; }
+
+    /* --- 6. TICKET DE JEU PREMIUM --- */
     .bet-ticket {
         background: transparent !important;
         border: 1px solid rgba(100,116,139,0.12);
@@ -528,6 +673,33 @@ def page_best_bets():
     
     st.markdown("## 🏆 Carte de Jeu (Top Picks)")
     
+    # Section d'aide pour néophytes
+    with st.expander("ℹ️ Comment lire ces paris ? (Guide débutant)", expanded=False):
+        st.markdown("""
+        ### 📚 Guide Rapide
+        
+        **🎯 Score Jimmy (0-100)**  
+        Plus le score est élevé, plus Jimmy est confiant dans ce pari. Privilégiez les scores > 75.
+        
+        **📊 Les Marchés**
+        - **Points** : Nombre de points marqués par le joueur
+        - **Passes** : Nombre de passes décisives
+        - **Rebonds** : Nombre de rebonds attrapés
+        
+        **🎲 Plus de / Moins de**
+        - **Plus de X** : Le joueur va dépasser X (exemple: "Plus de 25.5 points")
+        - **Moins de X** : Le joueur va rester sous X (exemple: "Moins de 8.5 rebonds")
+        
+        **💰 La Cote**
+        La cote indique combien vous gagnez. Exemple: cote 1.90 = pour 10€ misés, vous gagnez 19€ (9€ de profit).
+        
+        **💡 La Prévision Jimmy**
+        Jimmy analyse les stats, la forme, les blessures et prédit la performance. Si Jimmy prévoit 28 points et la ligne est à 25.5, c'est un bon pari "Plus de" !
+        
+        **✅ Conseil**  
+        Commencez par les paris marqués 🔥 **Haute Confiance** et vérifiez que la prévision est bien au-dessus (ou en-dessous) de la ligne du bookmaker.
+        """)
+
     # Options du scan : marchés et nombre max de joueurs par équipe
     markets_map = {
         "Points": "points",
@@ -660,55 +832,160 @@ def page_best_bets():
 
     st.markdown(f"#### 🎯 Sélections disponibles : {len(filtered_bets)}")
 
-    # Limiter l'affichage par défaut à 15, mais autoriser jusqu'à 50 si présent
-    show_all = st.checkbox("Afficher toutes les sélections", value=False)
-    max_show = 50 if show_all else 15
-    bets_to_show = filtered_bets[:max_show]
-
     if 'selected_bets_ids' not in st.session_state:
         st.session_state.selected_bets_ids = set()
 
-    col_sel_left, col_sel_right = st.columns([1, 3])
-    with col_sel_right:
-        st.write("Sélectionnez les paris à inclure (top 15 par défaut).")
+    # Checkbox pour afficher tous les picks - SANS session state pour forcer le rechargement
+    show_all = st.checkbox("🔓 Afficher tous les picks", value=False,
+                          help="Afficher tous les picks disponibles au lieu des 20 premiers")
+
+    if show_all:
+        st.success(f"✅ Affichage de **tous les {len(filtered_bets)} picks**")
+        bets_to_show = filtered_bets  # TOUS les picks
+    else:
+        st.info(f"📋 Affichage des **20 premiers picks** sur {len(filtered_bets)} disponibles")
+        bets_to_show = filtered_bets[:20]  # Seulement les 20 premiers
+        if len(filtered_bets) > 20:
+            st.warning(f"⚠️ {len(filtered_bets) - 20} picks cachés. Cochez la case ci-dessus pour tout afficher.")
+
+    # Debug: afficher combien on va vraiment afficher
+    st.caption(f"🔍 Debug: {len(bets_to_show)} picks seront affichés")
 
     for b in bets_to_show:
         bet_key = f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}"
         checked = bet_key in st.session_state.selected_bets_ids
+
+        # Déterminer le niveau de confiance
+        score = b.get('score', 0)
+        if score >= 75:
+            confidence_class = "confidence-high"
+            confidence_label = "🔥 Haute Confiance"
+        elif score >= 60:
+            confidence_class = "confidence-med"
+            confidence_label = "⚡ Confiance Moyenne"
+        else:
+            confidence_class = "confidence-low"
+            confidence_label = "⚠️ Confiance Faible"
+
+        # Traduction du marché
+        market_display = {
+            "points": "Points",
+            "assists": "Passes décisives",
+            "rebounds": "Rebonds"
+        }.get(b.get('market', ''), b.get('market', '').upper())
+
+        # Type de pari (Over/Under)
+        bet_type_display = "Plus de" if b.get('bet_type') == 'over' else "Moins de"
+        line = b.get('line', 0)
+
+        # Explication simple
+        projection = b.get('projection', 0)
+        margin = b.get('margin', 0)
+
+        if margin > 0:
+            explanation = f"💡 Jimmy prévoit <strong>{projection:.1f}</strong> {market_display.lower()}, soit <strong>{abs(margin):.1f} de plus</strong> que la ligne du bookmaker."
+        else:
+            explanation = f"💡 Jimmy prévoit <strong>{projection:.1f}</strong> {market_display.lower()}, soit <strong>{abs(margin):.1f} de moins</strong> que la ligne du bookmaker."
+
+        # Affichage de la carte avec composants Streamlit natifs
         with st.container():
-            cols = st.columns([0.1, 0.55, 0.35])
-            with cols[0]:
-                new_val = st.checkbox("Ajouter", value=checked, key=f"chk_{bet_key}", label_visibility="collapsed")
+            # Checkbox + Container dans une colonne
+            col_check, col_card = st.columns([0.05, 0.95])
+
+            with col_check:
+                new_val = st.checkbox(
+                    "✓",
+                    value=checked,
+                    key=f"chk_{bet_key}",
+                    label_visibility="collapsed"
+                )
                 if new_val:
                     st.session_state.selected_bets_ids.add(bet_key)
                 else:
                     st.session_state.selected_bets_ids.discard(bet_key)
-            with cols[1]:
-                st.markdown(f"**{b.get('player')}** • {b.get('team')} vs {b.get('opponent')}")
-                st.markdown(f"{b.get('market').upper()} — Ligne {b.get('line')} @ {b.get('odds')} • Type {b.get('bet_type')} • Source {b.get('odds_source') or 'n/a'}")
-                st.markdown(f"Score modèle: {b.get('score'):.0f} | Marge modèle: {b.get('margin'):+.1f} | Projection: {b.get('projection')}")
-                if b.get('risk_flag'):
-                    st.markdown(f"🚑 Statut blessure: {b.get('injury_status')}")
-            with cols[2]:
-                st.markdown(f"Valeur attendue: **{b.get('score'):.0f}**")
-                if b.get('margin') is not None:
-                    st.markdown(f"Marge vs ligne: **{b.get('margin'):+.1f}**")
-                st.markdown(f"Marché: {b.get('market').upper()}")
+
+            with col_card:
+                # Conteneur avec bordure
+                with st.container():
+                    # En-tête : Nom du joueur + Badge de confiance
+                    col_name, col_badge = st.columns([0.7, 0.3])
+                    with col_name:
+                        st.markdown(f"### {b.get('player', 'Inconnu')}")
+                    with col_badge:
+                        if score >= 75:
+                            st.success(confidence_label)
+                        elif score >= 60:
+                            st.warning(confidence_label)
+                        else:
+                            st.info(confidence_label)
+
+                    # Match
+                    st.markdown(f"🏀 **{b.get('team', 'N/A')} vs {b.get('opponent', 'N/A')}**")
+
+                    # Stats en 3 colonnes
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Marché", market_display)
+                    with col2:
+                        st.metric("Pari", f"{bet_type_display} {line}")
+                    with col3:
+                        st.metric("Cote", b.get('odds', 'N/A'))
+
+                    # Explication
+                    if margin > 0:
+                        st.info(f"💡 Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de plus** que la ligne du bookmaker.")
+                    else:
+                        st.info(f"💡 Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de moins** que la ligne du bookmaker.")
+
+                    # Footer
+                    col_src, col_score = st.columns(2)
+                    with col_src:
+                        st.caption(f"📊 Source: **{b.get('odds_source', 'The Odds API')}**")
+                    with col_score:
+                        st.caption(f"💯 Score Jimmy: **{score:.0f}/100**")
+
+                    # Alerte blessure
+                    if b.get('risk_flag'):
+                        st.error(f"🚑 Attention: {b.get('injury_status', 'Blessure')}")
+
+            st.markdown("---")  # Séparateur entre les cartes
 
     selected_bets = [b for b in filtered_bets if f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}" in st.session_state.selected_bets_ids]
 
-    st.markdown("### 🧮 Votre ticket")
+    st.markdown("---")
+    st.markdown("### 🎫 Votre Ticket de Paris")
+
     if selected_bets:
-        col_left, col_right = st.columns([3,1])
-        with col_left:
-            for b in selected_bets:
-                st.markdown(f"- {b.get('player')} {b.get('market')} {b.get('line')} @ {b.get('odds')} ({b.get('team')} vs {b.get('opponent')})")
+        # En-tête du ticket avec composant natif
+        st.info(f"📋 **{len(selected_bets)} pari(s) sélectionné(s)** - Vérifiez vos sélections avant de construire votre combiné")
+
+        for idx, b in enumerate(selected_bets, 1):
+            market_display = {
+                "points": "Points",
+                "assists": "Passes",
+                "rebounds": "Rebonds"
+            }.get(b.get('market', ''), b.get('market', ''))
+
+            bet_type_display = "Plus de" if b.get('bet_type') == 'over' else "Moins de"
+
+            # Carte de pari sélectionné
+            with st.container():
+                col_info, col_odds = st.columns([0.75, 0.25])
+                with col_info:
+                    st.markdown(f"**#{idx} • {b.get('player', 'N/A')}**")
+                    st.caption(f"{market_display} - {bet_type_display} {b.get('line')} | {b.get('team')} vs {b.get('opponent')}")
+                with col_odds:
+                    st.markdown(f"### {b.get('odds', 'N/A')}")
+                    st.caption("Cote")
+                st.divider()
+
+        col_left, col_right = st.columns([3, 1])
         with col_right:
-            if st.button("Construire le parlay"):
+            if st.button("🎯 Construire le Parlay", use_container_width=True, type="primary"):
                 resp = build_parlay(selected_bets)
                 st.write(resp)
     else:
-        st.info("Sélectionnez des picks pour construire le ticket.")
+        st.info("ℹ️ Cochez les paris ci-dessus pour les ajouter à votre ticket.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 

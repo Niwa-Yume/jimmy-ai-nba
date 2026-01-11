@@ -178,7 +178,10 @@ async def start_scan(req: ScanRequest | None = Body(None), background_tasks: Bac
 @app.get("/games/week")
 def get_weekly_games(days: int = 7, db: Session = Depends(get_db)):
     days = max(1, min(days, 14))  # clamp between 1 and 14 days
-    today = datetime.utcnow().date()
+    # ✅ FIX TIMEZONE: Utiliser la timezone NBA (US Eastern)
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    today = datetime.now(eastern).date()
     end = today + timedelta(days=days)
     games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date >= today,
                                                 models.GameSchedule.game_date <= end).order_by(models.GameSchedule.game_date).all()
@@ -484,8 +487,6 @@ def _run_sync_injuries():
 
 # --- MAIN SCAN LOOP ---
 
-# Limite de picks renvoyés au frontend (augmentée pour afficher plus que 10)
-TOP_PICKS_LIMIT = 50
 
 def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     print(f"🚀 Démarrage du scan {job_id}...")
@@ -501,19 +502,54 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
     with Session(engine) as db:
         scorer = AdvancedScorer(db)
 
-        now = datetime.utcnow()
-        odds_games = [g[0] for g in db.query(models.OddsSnapshot.game_id)
-                      .filter((models.OddsSnapshot.ttl_expire_at.is_(None)) | (models.OddsSnapshot.ttl_expire_at > now))
-                      .distinct().all()]
-        if odds_games:
-            all_games = db.query(models.GameSchedule).filter(models.GameSchedule.nba_game_id.in_(odds_games)).all()
-        else:
-            today = datetime.now().date()
-            all_games = db.query(models.GameSchedule).filter(models.GameSchedule.game_date == today).all()
+        # ✅ TOUJOURS calculer la date du jour en timezone NBA (Eastern)
+        from zoneinfo import ZoneInfo
+        eastern = ZoneInfo("America/New_York")
+        now_eastern = datetime.now(eastern)
+        today_eastern = now_eastern.date()
+        tomorrow_eastern = today_eastern + timedelta(days=1)
+
+        print(f"🕐 Heure serveur (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🕐 Heure NBA (Eastern): {now_eastern.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📅 Recherche des matchs: {today_eastern} et {tomorrow_eastern}")
+
+        # ✅ PURGER automatiquement les snapshots obsolètes (matchs d'hier ou avant)
+        cutoff_date = today_eastern - timedelta(days=1)
+        obsolete_game_ids = [g[0] for g in db.query(models.GameSchedule.nba_game_id).filter(
+            models.GameSchedule.game_date < cutoff_date
+        ).all()]
+
+        if obsolete_game_ids:
+            deleted = db.query(models.OddsSnapshot).filter(
+                models.OddsSnapshot.game_id.in_(obsolete_game_ids)
+            ).delete(synchronize_session=False)
+            if deleted > 0:
+                db.commit()
+                print(f"🗑️ {deleted} snapshots obsolètes supprimés (matchs < {cutoff_date})")
+
+        # ✅ RÉCUPÉRER UNIQUEMENT les matchs d'aujourd'hui/demain avec statut valide
+        all_games = db.query(models.GameSchedule).filter(
+            models.GameSchedule.game_date.in_([today_eastern, tomorrow_eastern]),
+            models.GameSchedule.status.in_(['SCHEDULED', 'IN_PROGRESS', 'PREGAME'])
+        ).order_by(
+            models.GameSchedule.game_date,
+            models.GameSchedule.game_time
+        ).all()
 
         if not all_games:
-            ANALYSIS_JOBS[job_id] = {"status": "complete", "data": [], "progress": 100, "message": "Aucun match ou aucune cote."}
+            print(f"❌ Aucun match trouvé pour {today_eastern} ou {tomorrow_eastern}")
+            ANALYSIS_JOBS[job_id] = {
+                "status": "complete",
+                "data": [],
+                "progress": 100,
+                "message": f"Aucun match trouvé pour {today_eastern.strftime('%d/%m/%Y')}"
+            }
             return
+
+        print(f"✅ {len(all_games)} match(s) trouvé(s) pour analyse :")
+        for g in all_games:
+            game_datetime = f"{g.game_date} {g.game_time or 'TBD'}"
+            print(f"   📅 {game_datetime} - {g.away_team_code} @ {g.home_team_code} ({g.status})")
 
         best_bets = []
         total_games = len(all_games)
@@ -556,34 +592,56 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                 return
             reason_dict[market] = reason_dict.get(market, 0) + 1
 
-        # Check quota au début
+        # Check quota : arrêter UNIQUEMENT si TOUTES les clés sont épuisées
         if betting_provider.quota_exceeded:
-            print("🛑 SCAN ARRÊTÉ : Quota API Odds dépassé. Les cotes ne seront pas mises à jour.")
-            print("   💡 Solution : Ajouter une nouvelle clé API dans THE_ODDS_API_KEY (séparées par des virgules).")
-            print("   📖 Documentation : https://the-odds-api.com/")
-            ANALYSIS_JOBS[job_id] = {
-                "status": "complete",
-                "data": [],
-                "progress": 100,
-                "message": "⚠️ Quota API dépassé. Impossible de récupérer les cotes. Ajoutez une clé API dans .env (THE_ODDS_API_KEY).",
-                "error": "QUOTA_EXCEEDED"
-            }
-            return
+            # Vérifier s'il reste des clés non utilisées
+            if betting_provider.current_key_index >= len(betting_provider.api_keys) - 1:
+                print("🛑 SCAN ARRÊTÉ : Toutes les clés API sont épuisées.")
+                print("   💡 Solution : Ajouter une nouvelle clé API dans THE_ODDS_API_KEY (séparées par des virgules).")
+                print("   📖 Documentation : https://the-odds-api.com/")
+                ANALYSIS_JOBS[job_id] = {
+                    "status": "complete",
+                    "data": [],
+                    "progress": 100,
+                    "message": "⚠️ Toutes les clés API sont épuisées. Ajoutez une nouvelle clé dans .env (THE_ODDS_API_KEY).",
+                    "error": "ALL_KEYS_EXHAUSTED"
+                }
+                return
+            else:
+                # Il reste des clés, on peut continuer
+                print(f"⚠️ Clé actuelle épuisée, mais {len(betting_provider.api_keys) - betting_provider.current_key_index - 1} clé(s) disponible(s)")
+                print("   🔄 La rotation automatique se fera lors de la prochaine requête")
+                # Réinitialiser le flag pour permettre la rotation
+                betting_provider.quota_exceeded = False
 
         for i, game in enumerate(all_games):
             ANALYSIS_JOBS[job_id] = {"status": "running", "data": best_bets, "progress": int((i / total_games) * 100)}
-            print(f"🔍 Analyse match {game.away_team_code} @ {game.home_team_code}...")
+            print(f"🔍 Analyse match {game.away_team_code} @ {game.home_team_code} ({game.game_date})...")
 
             # Récupérer/attacher les rosters AVANT de récupérer les cotes pour que les player_id existent
             home_roster = get_roster_for_team(game.home_team_code, db)
             away_roster = get_roster_for_team(game.away_team_code, db)
             all_players = home_roster + away_roster
 
-            # Forcer un fetch fresh (TTL=0) pour éviter les caches vides/obsolètes
-            betting_provider.fetch_odds_snapshots_for_game(db, game.nba_game_id, game.home_team_code, game.away_team_code, ttl_hours=0)
+            # ✅ FORCER le refresh des cotes pour les matchs du jour (ttl_hours=0)
+            # Cela garantit qu'on a toujours les cotes les plus récentes
+            fetch_success = betting_provider.fetch_odds_snapshots_for_game(
+                db, game.nba_game_id, game.home_team_code, game.away_team_code, ttl_hours=0
+            )
+
             # Log rapide du nombre de lignes par marché pour ce match
-            market_counts = db.query(models.OddsSnapshot.market, func.count(models.OddsSnapshot.id)).filter(models.OddsSnapshot.game_id == game.nba_game_id).group_by(models.OddsSnapshot.market).all()
-            print(f"   🧾 Snapshots {game.nba_game_id}: {market_counts}")
+            market_counts = db.query(models.OddsSnapshot.market, func.count(models.OddsSnapshot.id)).filter(
+                models.OddsSnapshot.game_id == game.nba_game_id
+            ).group_by(models.OddsSnapshot.market).all()
+
+            if fetch_success:
+                print(f"   ✅ Cotes récupérées: {dict(market_counts)}")
+            else:
+                print(f"   ⚠️ Échec récupération cotes pour {game.nba_game_id}")
+                print(f"   💡 Ce match n'est peut-être pas encore disponible sur The-Odds-API")
+                # On continue quand même avec les snapshots existants si disponibles
+                if market_counts:
+                    print(f"   💾 Utilisation des snapshots existants: {dict(market_counts)}")
 
             if not all_players:
                 print("   ⚠️ Aucun joueur récupéré (roster vide).")
@@ -706,9 +764,10 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
 
                     best_bets.append(base_pick)
 
-        # Trier par score (EV) décroissant et limiter aux meilleurs picks
+        # Trier par score (EV) décroissant - ENVOYER TOUS LES PICKS au frontend
         best_bets.sort(key=lambda x: x['ev'], reverse=True)
-        top_picks = best_bets[:TOP_PICKS_LIMIT]
+        # Le frontend gérera l'affichage avec sa checkbox (20 par défaut, tous si cochée)
+        top_picks = best_bets  # ✅ TOUS les picks, pas de limite
 
         # Log debug pour comprendre les filtres (flush pour éviter le buffering)
         print(f"📊 Exemples d'edges calculés (20 premiers):", flush=True)

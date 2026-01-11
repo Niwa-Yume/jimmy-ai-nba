@@ -51,8 +51,15 @@ def fetch_odds_for_upcoming_games(days_ahead: int = 2, ttl_hours: int = 4, versi
     with SessionLocal() as db:
         run_id = create_ingestion_run(db, source="the-odds-api", scope=f"games_next_{days_ahead}d", version_tag=version_tag)
         try:
-            today = datetime.utcnow().date()
+            # ✅ FIX TIMEZONE: Utiliser la timezone NBA (US Eastern)
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo("America/New_York")
+            today = datetime.now(eastern).date()
             until = today + timedelta(days=days_ahead)
+
+            print(f"🕐 Heure NBA (Eastern): {datetime.now(eastern).strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📅 Récupération des cotes pour les matchs du {today} au {until}")
+
             games = db.query(models.GameSchedule).filter(
                 models.GameSchedule.game_date >= today,
                 models.GameSchedule.game_date <= until

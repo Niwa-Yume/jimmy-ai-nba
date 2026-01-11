@@ -120,11 +120,16 @@ class BettingOddsProvider:
             print("   ❌ Fichier .env INTROUVABLE à cet endroit !")
 
         if keys_from_env:
-            self.api_keys = keys_from_env.split(',')
+            # ✅ IMPORTANT: strip() pour enlever les espaces avant/après chaque clé
+            self.api_keys = [k.strip() for k in keys_from_env.split(',') if k.strip()]
             self.current_key_index = 0
-            self.api_key = self.api_keys[self.current_key_index]
-            masked = self.api_key[:4] + "***"
-            print(f"   ✅ Clé chargée : {masked} (1/{len(self.api_keys)})")
+            self.api_key = self.api_keys[self.current_key_index] if self.api_keys else None
+            if self.api_key:
+                masked = self.api_key[:4] + "***"
+                print(f"   ✅ {len(self.api_keys)} clé(s) API chargée(s)")
+                print(f"   ✅ Clé active : {masked} (1/{len(self.api_keys)})")
+            else:
+                print("   ❌ Aucune clé API valide après parsing")
         else:
             self.api_keys = []
             self.api_key = None
@@ -169,6 +174,10 @@ class BettingOddsProvider:
         home_name = TEAM_MAPPING.get(home_team_code)
         away_name = TEAM_MAPPING.get(away_team_code)
 
+        if not home_name or not away_name:
+            print(f"   ❌ Codes équipe invalides: {home_team_code} ou {away_team_code} non trouvés dans TEAM_MAPPING")
+            return None
+
         def norm(s):
             return (s or "").lower().strip()
 
@@ -177,43 +186,83 @@ class BettingOddsProvider:
                 params = {"apiKey": self.api_key, "regions": region, "markets": "h2h"}
                 res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
 
-                if res.status_code in [401, 429]:
-                    print(f"🚨 ALERTE API ({region}) : Quota dépassé ou clé invalide ({res.status_code}). Tentative de changement de clé.")
+                # Boucle pour essayer TOUTES les clés disponibles
+                max_retries = len(self.api_keys) - 1
+                retry_count = 0
+
+                while res.status_code in [401, 429] and retry_count < max_retries:
+                    print(f"🚨 ALERTE API ({region}) : Quota dépassé ou clé invalide ({res.status_code}). Tentative {retry_count + 1}/{max_retries}")
+
                     if self.switch_to_next_key():
+                        retry_count += 1
                         params["apiKey"] = self.api_key
                         res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
-                        if res.status_code in [401, 429]:
-                            self.quota_exceeded = True
-                            continue
+
+                        if res.status_code == 200:
+                            print(f"   ✅ Nouvelle clé fonctionnelle! (clé {self.current_key_index + 1}/{len(self.api_keys)})")
+                            break
                     else:
                         self.quota_exceeded = True
-                        continue
+                        break
+
+                # Si toutes les clés sont épuisées pour cette région, passer à la suivante
+                if res.status_code in [401, 429]:
+                    print(f"   ❌ Toutes les clés épuisées pour région {region}, passage à la suivante")
+                    continue
 
                 if res.status_code != 200:
                     print(f"⚠️ Erreur HTTP API Odds ({region}) : {res.status_code}")
                     continue
 
                 events = res.json() or []
+
+                # ✅ Afficher la liste des matchs disponibles pour debug
+                if not events:
+                    print(f"   ⚠️ The-Odds-API ({region}): Aucun événement NBA disponible")
+                    continue
+
+                print(f"   🔍 The-Odds-API ({region}): {len(events)} événements NBA disponibles")
+
+                # Afficher les 3 premiers matchs pour debug
+                for idx, e in enumerate(events[:3]):
+                    commence_time = e.get('commence_time', 'N/A')
+                    if commence_time != 'N/A':
+                        try:
+                            dt = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
+                            from zoneinfo import ZoneInfo
+                            eastern = ZoneInfo("America/New_York")
+                            dt_eastern = dt.astimezone(eastern)
+                            commence_time = dt_eastern.strftime('%Y-%m-%d %H:%M ET')
+                        except:
+                            pass
+                    print(f"      {idx+1}. {e.get('away_team')} @ {e.get('home_team')} ({commence_time})")
+
+                # Recherche du match
                 for e in events:
                     h = norm(e.get("home_team")); a = norm(e.get("away_team"))
                     if home_name and away_name:
                         if norm(home_name) in h and norm(away_name) in a:
+                            print(f"   ✅ Match trouvé: {e['id']} - {e.get('away_team')} @ {e.get('home_team')}")
                             return e["id"]
                         if norm(home_name) in a and norm(away_name) in h:
+                            print(f"   ✅ Match trouvé (inversé): {e['id']} - {e.get('home_team')} @ {e.get('away_team')}")
                             return e["id"]
+
                 # Fallback partiel sur une seule équipe
                 for e in events:
                     h = norm(e.get("home_team")); a = norm(e.get("away_team"))
                     if (home_name and norm(home_name) in h) or (away_name and norm(away_name) in a):
+                        print(f"   ⚠️ Match partiel trouvé: {e['id']} (une seule équipe correspond)")
                         return e["id"]
 
             except Exception as e:
                 print(f"❌ Exception API Events ({region}): {e}")
                 continue
 
-        print(f"⚠️ Match non trouvé sur The-Odds-API pour : {home_team_code} vs {away_team_code}")
-        print(f"   💡 Vérifiez si ce match existe sur The-Odds-API")
+        print(f"⚠️ Match NON TROUVÉ sur The-Odds-API pour : {home_team_code} vs {away_team_code}")
         print(f"   💡 Noms recherchés: {home_name} (home) vs {away_name} (away)")
+        print(f"   💡 Ce match n'existe peut-être pas encore sur The-Odds-API")
+        print(f"   💡 Vérifiez manuellement : https://the-odds-api.com/sports-odds-data/basketball-nba-odds.html")
         return None
 
     def update_odds_for_game(self, db: Session, nba_game_id: str, home_code: str, away_code: str):
@@ -358,6 +407,10 @@ class BettingOddsProvider:
         return OddsCompat(snap)
 
     def _has_fresh_snapshots(self, db: Session, game_id: str, ttl_hours: int = 4):
+        # ✅ Si ttl_hours == 0, toujours forcer le refresh (pour les matchs du jour)
+        if ttl_hours <= 0:
+            return False
+
         cutoff = datetime.utcnow() - timedelta(hours=ttl_hours)
         return db.query(models.OddsSnapshot).filter(
             models.OddsSnapshot.game_id == game_id,
@@ -399,22 +452,32 @@ class BettingOddsProvider:
             }
             res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
 
-            if res.status_code in [401, 429]:
+            # Boucle pour essayer TOUTES les clés disponibles
+            max_retries = len(self.api_keys) - 1  # On peut essayer toutes les clés restantes
+            retry_count = 0
+
+            while res.status_code in [401, 429] and retry_count < max_retries:
                 print(f"   🚨 The-Odds-API: QUOTA DÉPASSÉ ou CLÉ INVALIDE (HTTP {res.status_code})")
-                print(f"   🔄 Tentative de changement de clé API...")
+                print(f"   🔄 Tentative de changement de clé API... (essai {retry_count + 1}/{max_retries})")
+
                 if self.switch_to_next_key():
+                    retry_count += 1
                     params["apiKey"] = self.api_key
                     res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
-                    if res.status_code in [401, 429]:
-                        print(f"   ❌ Nouvelle clé aussi épuisée (HTTP {res.status_code}) - Abandon")
-                        self.quota_exceeded = True
-                        return False
-                    else:
-                        print(f"   ✅ Nouvelle clé fonctionnelle!")
+
+                    if res.status_code == 200:
+                        print(f"   ✅ Nouvelle clé fonctionnelle! (clé {self.current_key_index + 1}/{len(self.api_keys)})")
+                        break
                 else:
                     print(f"   ❌ Plus aucune clé API disponible - Abandon")
                     self.quota_exceeded = True
                     return False
+
+            # Si après avoir essayé toutes les clés, on a encore une erreur
+            if res.status_code in [401, 429]:
+                print(f"   ❌ Toutes les clés ({len(self.api_keys)}) ont été essayées, toutes épuisées")
+                self.quota_exceeded = True
+                return False
 
             if res.status_code != 200:
                 if res.status_code == 422:
