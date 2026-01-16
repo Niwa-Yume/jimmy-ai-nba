@@ -830,26 +830,34 @@ def page_best_bets():
 
     filtered_bets = bets
 
-    st.markdown(f"#### 🎯 Sélections disponibles : {len(filtered_bets)}")
+    st.markdown(f"#### 🎯 Sélections disponibles : {len(filtered_bets)} picks")
 
     if 'selected_bets_ids' not in st.session_state:
         st.session_state.selected_bets_ids = set()
 
-    # Checkbox pour afficher tous les picks - SANS session state pour forcer le rechargement
-    show_all = st.checkbox("🔓 Afficher tous les picks", value=False,
-                          help="Afficher tous les picks disponibles au lieu des 20 premiers")
+    # Checkbox pour afficher tous les picks
+    col_check, col_info = st.columns([0.3, 0.7])
+    with col_check:
+        show_all = st.checkbox(
+            "🔓 Afficher tous les picks",
+            value=False,
+            key="show_all_picks_checkbox",
+            help="Décocher pour afficher les 15 meilleurs picks uniquement"
+        )
 
-    if show_all:
-        st.success(f"✅ Affichage de **tous les {len(filtered_bets)} picks**")
-        bets_to_show = filtered_bets  # TOUS les picks
-    else:
-        st.info(f"📋 Affichage des **20 premiers picks** sur {len(filtered_bets)} disponibles")
-        bets_to_show = filtered_bets[:20]  # Seulement les 20 premiers
-        if len(filtered_bets) > 20:
-            st.warning(f"⚠️ {len(filtered_bets) - 20} picks cachés. Cochez la case ci-dessus pour tout afficher.")
+    with col_info:
+        if show_all:
+            st.success(f"✅ Affichage de **TOUS les {len(filtered_bets)} picks disponibles**")
+            bets_to_show = filtered_bets
+        else:
+            bets_to_show = filtered_bets[:15]
+            if len(filtered_bets) > 15:
+                st.info(f"📋 Affichage des **15 meilleurs picks** sur {len(filtered_bets)} disponibles. Cochez la case pour tout afficher.")
+            else:
+                st.info(f"📋 Affichage de **tous les {len(filtered_bets)} picks**")
 
     # Debug: afficher combien on va vraiment afficher
-    st.caption(f"🔍 Debug: {len(bets_to_show)} picks seront affichés")
+    st.caption(f"🔍 Debug: {len(bets_to_show)} picks affichés / {len(filtered_bets)} disponibles")
 
     for b in bets_to_show:
         bet_key = f"{b.get('player_id')}|{b.get('market')}|{b.get('game_id')}"
@@ -905,7 +913,16 @@ def page_best_bets():
                     st.session_state.selected_bets_ids.discard(bet_key)
 
             with col_card:
-                # Conteneur avec bordure
+                # Conteneur avec bordure colorée selon la confiance
+                border_color = "#22c55e" if score >= 75 else ("#f59e0b" if score >= 60 else "#94a3b8")
+                st.markdown(
+                    f"""
+                    <div style="border-left: 4px solid {border_color}; padding-left: 10px; margin-bottom: 10px;">
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
                 with st.container():
                     # En-tête : Nom du joueur + Badge de confiance
                     col_name, col_badge = st.columns([0.7, 0.3])
@@ -919,34 +936,47 @@ def page_best_bets():
                         else:
                             st.info(confidence_label)
 
-                    # Match
-                    st.markdown(f"🏀 **{b.get('team', 'N/A')} vs {b.get('opponent', 'N/A')}**")
+                    # Match avec émojis pour clarté
+                    home_team = b.get('team', 'N/A')
+                    away_team = b.get('opponent', 'N/A')
+                    st.markdown(f"🏀 **{away_team} @ {home_team}**")
 
-                    # Stats en 3 colonnes
+                    # Stats en 3 colonnes avec style amélioré
+                    st.markdown("---")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Marché", market_display)
+                        st.markdown("**📊 Marché**")
+                        st.markdown(f"<span style='font-size: 1.1em; font-weight: 600;'>{market_display}</span>", unsafe_allow_html=True)
                     with col2:
-                        st.metric("Pari", f"{bet_type_display} {line}")
+                        st.markdown("**🎯 Pari Recommandé**")
+                        pari_style = "color: #22c55e; font-weight: 700;" if margin != 0 else ""
+                        st.markdown(f"<span style='font-size: 1.1em; {pari_style}'>{bet_type_display} {line}</span>", unsafe_allow_html=True)
                     with col3:
-                        st.metric("Cote", b.get('odds', 'N/A'))
+                        st.markdown("**💰 Cote**")
+                        st.markdown(f"<span style='font-size: 1.2em; font-weight: 700; color: #10b981;'>{b.get('odds', 'N/A')}</span>", unsafe_allow_html=True)
 
-                    # Explication
+                    # Explication détaillée avec contexte
+                    st.markdown("---")
                     if margin > 0:
-                        st.info(f"💡 Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de plus** que la ligne du bookmaker.")
+                        st.info(f"💡 **Analyse Jimmy :** Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de plus** que la ligne du bookmaker ({line}). C'est pourquoi nous recommandons **{bet_type_display} {line}**.")
                     else:
-                        st.info(f"💡 Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de moins** que la ligne du bookmaker.")
+                        st.info(f"💡 **Analyse Jimmy :** Jimmy prévoit **{projection:.1f}** {market_display.lower()}, soit **{abs(margin):.1f} de moins** que la ligne du bookmaker ({line}). C'est pourquoi nous recommandons **{bet_type_display} {line}**.")
 
-                    # Footer
+                    # Footer avec informations sur la source et le score
+                    st.markdown("---")
                     col_src, col_score = st.columns(2)
                     with col_src:
-                        st.caption(f"📊 Source: **{b.get('odds_source', 'The Odds API')}**")
+                        odds_source_display = b.get('odds_source', 'snapshot')
+                        if odds_source_display == 'snapshot':
+                            st.caption("📊 **Source des cotes :** Snapshot historique")
+                        else:
+                            st.caption(f"📊 **Source des cotes :** {odds_source_display}")
                     with col_score:
-                        st.caption(f"💯 Score Jimmy: **{score:.0f}/100**")
+                        st.caption(f"💯 **Score de confiance Jimmy :** {score:.0f}/100")
 
-                    # Alerte blessure
+                    # Alerte blessure (si applicable)
                     if b.get('risk_flag'):
-                        st.error(f"🚑 Attention: {b.get('injury_status', 'Blessure')}")
+                        st.error(f"⚠️ **Alerte Blessure :** {b.get('injury_status', 'Statut inconnu')} - Vérifiez le statut du joueur avant de parier !")
 
             st.markdown("---")  # Séparateur entre les cartes
 

@@ -485,6 +485,42 @@ def _run_sync_injuries():
         print(f"⚠️ sync_injuries échoué : {e}")
 
 
+def _run_sync_games():
+    try:
+        base_dir = Path(__file__).resolve().parent.parent
+        script_path = base_dir / "data-pipeline" / "sync_weekly_games_v2.py"
+        if not script_path.exists():
+            print("⚠️ sync_weekly_games_v2.py introuvable. Skip refresh matchs.")
+            return
+        subprocess.run(["python", str(script_path)], check=False, timeout=120)
+    except Exception as e:
+        print(f"⚠️ sync_games échoué : {e}")
+
+
+def _run_sync_players():
+    try:
+        base_dir = Path(__file__).resolve().parent.parent
+        script_path = base_dir / "data-pipeline" / "populate_players.py"
+        if not script_path.exists():
+            print("⚠️ populate_players.py introuvable. Skip refresh joueurs.")
+            return
+        subprocess.run(["python", str(script_path)], check=False, timeout=120)
+    except Exception as e:
+        print(f"⚠️ sync_players échoué : {e}")
+
+
+def _run_sync_stats():
+    try:
+        base_dir = Path(__file__).resolve().parent.parent
+        script_path = base_dir / "data-pipeline" / "populate_stats.py"
+        if not script_path.exists():
+            print("⚠️ populate_stats.py introuvable. Skip refresh stats.")
+            return
+        subprocess.run(["python", str(script_path)], check=False, timeout=120)
+    except Exception as e:
+        print(f"⚠️ sync_stats échoué : {e}")
+
+
 # --- MAIN SCAN LOOP ---
 
 
@@ -499,6 +535,9 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
         print(f"🚨 AUCUNE CLÉ The-Odds-API DISPONIBLE - Configurez THE_ODDS_API_KEY dans .env")
 
     _run_sync_injuries()
+    _run_sync_games()
+    _run_sync_players()
+    _run_sync_stats()
     with Session(engine) as db:
         scorer = AdvancedScorer(db)
 
@@ -753,7 +792,7 @@ def run_best_bets_scan(job_id: str, markets: list[str] | None = None):
                         "ev": score,
                         "game_id": game.nba_game_id,
                         "player_id": p['id'],
-                        "bet_type": "Over" if proj > line else "Under",
+                        "bet_type": "over" if proj > line else "under",  # ✅ CORRECTION: minuscules pour uniformité
                         "odds_source": odds_source,
                         "injury_status": injury_status,
                         "play_probability": play_prob,

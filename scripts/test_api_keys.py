@@ -8,7 +8,7 @@ import os
 import requests
 from dotenv import load_dotenv
 
-load_dotenv('.env')
+load_dotenv('../.env')
 
 keys_str = os.getenv('THE_ODDS_API_KEY', '')
 api_keys = [k.strip() for k in keys_str.split(',') if k.strip()]

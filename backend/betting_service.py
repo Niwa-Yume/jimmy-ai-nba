@@ -182,19 +182,25 @@ class BettingOddsProvider:
             return (s or "").lower().strip()
 
         for region in regions_to_try:
+            # ✅ Si toutes les clés sont déjà épuisées, inutile de continuer
+            if self.quota_exceeded:
+                print(f"   🚨 Abandon: Toutes les clés API ont été épuisées")
+                break
+
             try:
                 params = {"apiKey": self.api_key, "regions": region, "markets": "h2h"}
                 res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
 
-                # Boucle pour essayer TOUTES les clés disponibles
-                max_retries = len(self.api_keys) - 1
-                retry_count = 0
+                # ✅ Boucle pour essayer TOUTES les clés disponibles (incluant la dernière)
+                keys_tested = 0
+                max_keys_to_test = len(self.api_keys)
 
-                while res.status_code in [401, 429] and retry_count < max_retries:
-                    print(f"🚨 ALERTE API ({region}) : Quota dépassé ou clé invalide ({res.status_code}). Tentative {retry_count + 1}/{max_retries}")
+                while res.status_code in [401, 429] and keys_tested < max_keys_to_test:
+                    print(f"   🚨 ALERTE API ({region}) : Quota dépassé ou clé invalide (HTTP {res.status_code})")
+                    print(f"   🔄 Tentative de changement de clé... (clé actuelle: {self.current_key_index + 1}/{len(self.api_keys)})")
 
                     if self.switch_to_next_key():
-                        retry_count += 1
+                        keys_tested += 1
                         params["apiKey"] = self.api_key
                         res = requests.get(f"{self.base_url}/events", params=params, timeout=5)
 
@@ -202,12 +208,15 @@ class BettingOddsProvider:
                             print(f"   ✅ Nouvelle clé fonctionnelle! (clé {self.current_key_index + 1}/{len(self.api_keys)})")
                             break
                     else:
+                        # Plus de clés disponibles
                         self.quota_exceeded = True
-                        break
+                        print(f"   🚨 Toutes les {len(self.api_keys)} clés API ont été testées et sont épuisées")
+                        return None
 
-                # Si toutes les clés sont épuisées pour cette région, passer à la suivante
+                # Si après avoir essayé toutes les clés, on a encore une erreur pour cette région
                 if res.status_code in [401, 429]:
-                    print(f"   ❌ Toutes les clés épuisées pour région {region}, passage à la suivante")
+                    print(f"   ❌ Toutes les clés épuisées pour région {region}, passage à la région suivante")
+                    # ✅ NE PAS break ici, tenter la région suivante avec les clés restantes
                     continue
 
                 if res.status_code != 200:
@@ -452,16 +461,16 @@ class BettingOddsProvider:
             }
             res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
 
-            # Boucle pour essayer TOUTES les clés disponibles
-            max_retries = len(self.api_keys) - 1  # On peut essayer toutes les clés restantes
-            retry_count = 0
+            # ✅ Boucle pour essayer TOUTES les clés disponibles (incluant la dernière)
+            keys_tested = 0
+            max_keys_to_test = len(self.api_keys)
 
-            while res.status_code in [401, 429] and retry_count < max_retries:
+            while res.status_code in [401, 429] and keys_tested < max_keys_to_test:
                 print(f"   🚨 The-Odds-API: QUOTA DÉPASSÉ ou CLÉ INVALIDE (HTTP {res.status_code})")
-                print(f"   🔄 Tentative de changement de clé API... (essai {retry_count + 1}/{max_retries})")
+                print(f"   🔄 Tentative de changement de clé API... (clé actuelle: {self.current_key_index + 1}/{len(self.api_keys)}, clés testées: {keys_tested}/{max_keys_to_test})")
 
                 if self.switch_to_next_key():
-                    retry_count += 1
+                    keys_tested += 1
                     params["apiKey"] = self.api_key
                     res = requests.get(f"{self.base_url}/events/{event_id}/odds", params=params, timeout=8)
 
